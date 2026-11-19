@@ -8,12 +8,12 @@ extent stated below.
 SWAT+P is an augmentation of the SWAT+ watershed model. The augmentation components are
 the original work of the author:
 
-- `src/nut_pminrl3.f90` — the two-rate Langmuir sorption core;
-- `src/nut_pminrl4.f90` — the HYPE Freundlich formulation;
-- `src/nut_pminrl5.f90` — the RZWQM2-P sorption-ratio exchange formulation;
-- `src/nut_pminrl6.f90` — the equilibrium speciation formulation;
-- `src/aug_p_module.f90` — the shared data module of the library;
-- the macropore tile drainage bypass code in `src/nut_solp.f90`;
+- `model/src/nut_pminrl3.f90` — the two-rate Langmuir sorption core;
+- `model/src/nut_pminrl4.f90` — the HYPE Freundlich formulation;
+- `model/src/nut_pminrl5.f90` — the RZWQM2-P sorption-ratio exchange formulation;
+- `model/src/nut_pminrl6.f90` — the equilibrium speciation formulation;
+- `model/src/aug_p_module.f90` — the shared data module of the library;
+- the macropore tile drainage bypass code in `model/src/nut_solp.f90`;
 - the port designs in `design/` and the test results in `results/`.
 
 ## Status of this disclosure
@@ -30,7 +30,7 @@ augmentation components as a standalone product.
 ## The underlying model
 
 The underlying SWAT+ code in this repository is the work of the SWAT+ developers and is
-distributed under the GNU Lesser General Public License, version 2.1 (see `LICENSE`),
+distributed under the GNU Lesser General Public License, version 2.1 (see `model/LICENSE`),
 which continues to govern that code. Nothing in this notice changes the licence of the
 underlying model.
 

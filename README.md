@@ -17,9 +17,9 @@ the soil phosphorus subroutine, selected by a single control code:
 SWAT+P also carries a switchable macropore tile drainage bypass, because the stock tile
 routine transports dissolved phosphorus only and has no macropore pathway.
 
-This repository holds the full augmented source tree: 660 Fortran files under `src/`,
+This repository holds the full augmented source tree: 660 Fortran files under `model/src/`,
 including `aug_p_module.f90` and `nut_pminrl.f90` through `nut_pminrl6.f90`, the port
-designs under `design/`, and the test watershed and factorial results under `refdata/` and
+designs under `design/`, and the test watershed and factorial results under `model/refdata/` and
 `results/`. The branch was built on the official SWAT+ source (whose own readme is kept as
 `README_SWATplus_stock.md`) and is tested on a common test watershed, where the six
 formulations span more than an order of magnitude in dissolved phosphorus export while
