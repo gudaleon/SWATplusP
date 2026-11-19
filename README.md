@@ -17,12 +17,14 @@ the soil phosphorus subroutine, selected by a single control code:
 SWAT+P also carries a switchable macropore tile drainage bypass, because the stock tile
 routine transports dissolved phosphorus only and has no macropore pathway.
 
-The source of record for the augmented code, with its port designs, build scripts and test
-results, is held in the private repository `gudaleon/SWATplus_P_Core`, under
-`worked_examples/08_swatplus_augmentation/swatplus_aug/` (the full augmented source tree:
-660 Fortran files). The branch was built on the official SWAT+ source and is tested on a
-common test watershed, where the six formulations span more than an order of magnitude in
-dissolved phosphorus export while agreeing on how the soils rank.
+This repository holds the full augmented source tree: 660 Fortran files under `src/`,
+including `aug_p_module.f90` and `nut_pminrl.f90` through `nut_pminrl6.f90`, the port
+designs under `design/`, and the test watershed and factorial results under `refdata/` and
+`results/`. The branch was built on the official SWAT+ source (whose own readme is kept as
+`README_SWATplus_stock.md`) and is tested on a common test watershed, where the six
+formulations span more than an order of magnitude in dissolved phosphorus export while
+agreeing on how the soils rank. The wider development archive of the programme is held in
+the private repository `gudaleon/SWATplus_P_Core`.
 
 SWAT+P is the modelling engine of the Lake of the Woods watershed programme: the model of
 the Canadian tributaries of Lake of the Woods (40,680 km²) is built in SWAT+P, with its

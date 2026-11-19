@@ -1,0 +1,13 @@
+variant,branch,surqsolp,sedminp
+shield_median,0,0.06017,0.08483
+shield_median,1,0.04600,0.17000
+shield_median,2,0.21175,0.06858
+agassiz_clay,0,0.04658,0.06650
+agassiz_clay,1,0.04100,0.13317
+agassiz_clay,2,0.14525,0.05533
+organic_peat,0,0.12108,0.16258
+organic_peat,1,0.06267,0.30833
+organic_peat,2,0.60858,0.11683
+sand_low_oc,0,0.03600,0.05292
+sand_low_oc,1,0.03617,0.10250
+sand_low_oc,2,0.08742,0.04692

@@ -1,0 +1,21 @@
+# Port design note — RZWQM2-P phosphorus formulation into SWAT+ (sol_p_model 4)
+
+Written 2026-11-19, before any Fortran, following the pattern of the two earlier port designs. The formulation itself is already verified: Worked Example 6 reimplemented soil sections 4, 10 and 11 of Sadhukhan and Qi (2018) in Python, passed its three pre-registered tests, and conserved mass exactly once its reservoir bookkeeping gap was accounted. This port takes the soil pool formulation into the SWAT+P binary as the fifth switchable option; the formulation's transport sections are out of scope for version 1, for the reason stated below.
+
+## What the branch implements
+
+Per soil layer and day, in the host's labile, active and stable mineral pools (all in the report's kg/ha pool terms):
+
+1. The sorption ratio PSP from the report's equation 77, PSP = −0.045·log10(clay percent) + 0.001·LabP − 0.035·(soil organic carbon percent) + 0.43, clamped to [0.01, 0.9]. The LabP basis is a genuine ambiguity of record: the original regression's soil-test phosphorus is in mg/kg, which is the basis the host's Vadas and White branch uses, while Example 6's verified implementation applies the term to the labile pool in kg/ha, the pool's own units in that code. The port follows Example 6's reading, so that the gate below compares like with like, and the basis difference is recorded here as a discrepancy-register item and a stated sensitivity for a later round; what distinguishes this branch from branch 1 is in any case the exchange dynamics that follow, not the estimator.
+2. The labile–active imbalance PBAL = LabP − ActP·PSP/(1−PSP), relaxed by the report's day-count power laws: the sorption flux is Psrpf·PBAL with Psrpf = A·Day^B, A = 0.918·exp(−4.603·PSP) and B = −0.238·ln(A) − 1.126, and the desorption flux is Pdsrpf·|PBAL| with Pdsrpf = Base·Day^(−0.29) and Base = −1.08·PSP + 0.79, where Day counts consecutive days of one-signed imbalance. The day counter is the formulation's memory and is held as branch state per HRU and layer, on the pattern the HYPE port established for its tracked sorbed content.
+3. The active–stable imbalance PBAL1 = 4·ActP − StabIP, relaxed at 0.0006 per day toward stability and 0.00006 per day back. These are the same rates the augmented Langmuir branch borrowed as its ageing rates; here they run in their home formulation.
+
+## Scope limits, stated in advance
+
+- Transport is not ported in version 1. The formulation's distinctive tile-drainage behaviour (Example 6, sections 10 and 11) rides on a macropore flux, and the host model has no macropore flux to attach it to; its crack-flow pathway is a different mechanism and substituting it silently would misrepresent the formulation. The branch therefore changes pool dynamics only, exports through the host's existing concentration fences exactly as the stock branches do, and the paper reports the transport contrast from Example 6's standalone results, labelled as such.
+- Organic phosphorus transformations are not ported in version 1: the host's organic cycling lives in routines outside the phosphorus dispatch, and the report's residue-class mineralization stays represented by Example 6. This is the same class of limitation the HYPE port carries for the stable mineral pool, and it is stated in the branch's results wherever they are reported.
+- Because the branch exports through the stock partition rather than a published equilibrium concentration, no change to the solution-phosphorus routine is needed; the dispatch gains one line and the module gains the day-counter state.
+
+## Pre-registered gate
+
+The Example 6 equilibration test restated for the port: from the same initial pools (labile 50, active 10, stable 100 kg/ha on the test soil), the branch's pool trajectory in a no-flux harness must approach the same near-zero imbalances (PBAL and PBAL1 below 0.05 kg/ha) with the same slow, day-count-damped approach, and total phosphorus must conserve to machine precision. The watershed comparison then runs on the five soils of the earlier rounds, with the expectation stated in advance that this branch's export sits closest to the Jones branch, since the two share a lineage, and that any large divergence between them is itself a finding about the exchange dynamics.

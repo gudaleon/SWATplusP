@@ -1,0 +1,2403 @@
+
+      !This subroutine performs the following operations:
+      !  1. Read in grid cell information
+      !  2. Prepare the grid cells for the groundwater model
+      !  3. Connect SWAT+ objects to grid cells
+
+      !  Prepared by: Ryan Bailey, Colorado State University (beginning 2020)
+      !  Adapted for gwFlowMerge: unified SS type, renamed variables, NAM/USGS removed
+
+      subroutine gwflow_read
+
+      use gwflow_module
+      use hydrograph_module
+      use sd_channel_module
+      use maximum_data_module
+      use hru_module, only : hru
+      use reservoir_data_module, only : wet_dat
+      use cs_data_module
+      use constituent_mass_module, only : cs_db
+      use water_allocation_module, only : canal
+      use utils, only : split_line
+      use basin_module, only : pco
+
+      implicit none
+
+      character*10 b(3),irrig_type
+      character*4 aString
+      !water balance and solute balance output file headers
+      character(len=13) :: gwflow_hdr(19) = ""
+      character(len=13) :: gwflow_hdr_day(26) = ""
+      character(len=13) :: gwflow_hdr_mon(21) = ""
+      character(len=13) :: gwflow_hdr_yr(20) = ""
+      character(len=13) :: gwflow_hdr_aa(20) = ""
+      character(len=13) :: gwflow_hdr_day_grp(25) = ""
+      !canal/pond header arrays removed -- headers now use inline format 8000
+      character(len=13) :: sol_hdr_day(25) = ""
+      character(len=13) :: sol_hdr_mo(22) = ""
+      character(len=13) :: sol_hdr_yr(21) = ""
+      character(len=13) :: sol_hdr_aa(21) = ""
+      character(len=13) :: heat_hdr_day(24) = ""
+      character(len=13) :: heat_hdr_yr(22) = ""
+      character(len=13) :: heat_hdr_aa(22) = ""
+      character(len=16) :: hydsep_hdr(10) = ""
+      !general variables
+      character(len=13) :: header = ""
+      character(len=30) :: read_type = ""
+      character*100 file_name(50)
+      character(len=13) :: cs_names(20) = ""
+      character(len=13) :: name = ""
+      logical  i_exist
+      logical  i_exist2
+      integer :: date_time(8) = 0
+      integer :: i = 0
+      integer :: j = 0
+      integer :: k = 0
+      integer :: m = 0
+      integer :: n = 0
+      integer :: s = 0
+      integer :: isalt = 0
+      integer :: count = 0
+      integer :: eof = 0
+      integer :: cell_num = 0
+      integer :: sol_index = 0
+      integer :: div = 0
+      integer :: channel = 0
+      integer :: chan_cell = 0
+      integer :: ob_num = 0
+      integer :: dum_id = 0
+      integer :: active_cell = 0
+      real :: cell_size = 0.
+      real :: x_coord = 0.
+      real :: y_coord = 0.
+      integer :: num_conn = 0
+      real :: sum = 0.
+      real :: dist_x = 0.
+      real :: dist_y = 0.
+      real :: min_dist = 0.
+      real :: distance = 0.
+      real :: gw_cell_volume = 0.
+      !input file numbers
+      integer :: in_gw = 0
+      integer :: in_wtdepth = 0
+      integer :: in_hru_cell = 0
+      integer :: in_res_cell = 0
+      integer :: in_canal_cell = 0
+      integer :: in_gw_minl = 0
+      !aquifer and streambed properties
+      integer :: K_zone = 0
+      integer :: Sy_zone = 0
+      integer :: nzones_aquK = 0
+      integer :: nzones_aquSy = 0
+      integer :: nzones_strK = 0
+      integer :: nzones_strbed = 0
+      real, dimension (:), allocatable :: zones_aquK
+      real, dimension (:), allocatable :: zones_aquSy
+      real, dimension (:), allocatable :: zones_strK
+      real, dimension (:), allocatable :: zones_strbed
+      real, dimension (:), allocatable :: zones_Kt
+      real, dimension (:), allocatable :: cell_init_temp  !per-cell initial gw temperature (heat)
+      !water table depth for initial head
+      integer :: nzones_wt = 0
+      real, dimension (:), allocatable :: zones_wt
+      !external pumping information
+      integer :: pumpex_cell = 0
+      !tile drain information
+      real :: tile_depth_val = 0.
+      real :: tile_drain_area_val = 0.
+      real :: tile_K_val = 0.
+      !reservoir information
+      integer :: res_cell = 0
+      integer :: res_id = 0
+      real :: res_stage = 0.
+      !canal information
+      integer, allocatable :: canal_out(:)
+      integer, allocatable :: canal_div(:)
+      real, allocatable :: con_row_buf(:)
+      integer :: day_beg = 0
+      integer :: day_end = 0
+      integer :: canal_id = 0
+      integer :: ic = 0
+      integer :: obj_tot = 0
+      real :: thick = 0.
+      real :: depth = 0.
+      real :: width = 0.
+      real :: bed_K = 0.
+      real :: length = 0.
+      real :: frc_ret = 0
+      real :: stage = 0.
+      real :: fld_ro = 0.
+      real :: spk_ro = 0.
+      real :: drp_ro = 0.
+      !recharge pond information
+      integer :: month_days(12) = 0
+      integer :: yr_start = 0
+      integer :: mo_start = 0
+      integer :: dy_start = 0
+      integer :: num_yr = 0
+      integer :: num_dy = 0
+      integer :: pe_yr_s = 0, pe_dy_s = 0, pe_yr_e = 0, pe_dy_e = 0
+      integer :: prev_cell = 0, ipump = 0, iper = 0
+      real :: gw_pumpex_rates_tmp = 0.
+      !HRU-cell, LSU-cell linkage
+      integer :: cell = 0
+      integer :: hru_count = 0
+      integer :: hru_cell = 0
+      integer :: nhru_connected = 0
+      integer :: num_hru = 0
+      real :: hru_area = 0.
+      integer :: hru_id = 0
+      integer :: lsu = 0
+      integer :: nlsu = 0
+      integer :: nlsu_connected = 0
+      integer :: lsu_id = 0
+      integer :: cell_count = 0
+      real :: poly_area = 0.
+      real :: cell_area = 0.
+      real :: lsu_area = 0.
+      !time-varying boundary conditions
+      integer :: bc_type_int = 0
+      integer :: in_tvh = 0
+      integer :: cell_id = 0
+      !groundwater transit time
+      integer :: in_transit_time = 0
+      integer :: cell_transit = 0
+      !observation well cell IDs (local, before USG conversion)
+      integer, dimension (:), allocatable :: gw_obs_cells_init
+      integer :: obs_cell_id = 0
+      !dummy variables for reading
+      integer :: dum = 0
+      integer :: dum1 = 0
+      integer :: dum2 = 0
+      integer :: dum3 = 0
+      integer :: dum7 = 0
+      integer :: dum8 = 0
+      real :: dum4 = 0.
+      real :: dum5 = 0.
+      real :: dum6 = 0.
+      real :: single_value = 0.
+      integer :: max_num = 0
+      integer :: max_cells = 0
+      integer :: wb_cell = 0
+      real :: group_area = 0.
+      !split-format file readers (gwflow.codes/zones/cells/cellcons/outputs)
+      character(len=2500) :: split_line_buf = ''
+      character(len=50) :: split_fields(40) = ''
+      character(len=50) :: code_keys(40) = ''
+      integer :: n_keys = 0, n_vals = 0, icode = 0
+      integer :: split_nf = 0
+      integer :: combined_yrday = 0
+      integer :: cell_id_in = 0
+      character(len=50) :: code_key = ''
+      character(len=50) :: code_val = ''
+      real, allocatable :: cell_strK_over(:), cell_strthick_over(:)
+      real, allocatable :: cell_tile_depth_over(:), cell_tile_area_over(:), cell_tile_K_over(:)
+      logical, allocatable :: cell_strK_set(:), cell_strthick_set(:)
+      logical, allocatable :: cell_tile_depth_set(:), cell_tile_area_set(:), cell_tile_K_set(:)
+
+
+      !write message to screen
+      call DATE_AND_TIME (b(1), b(2), b(3), date_time)
+      write (*,111) "reading from groundwater file      ", date_time(5), date_time(6), date_time(7)
+
+      !write message to record file
+      write(out_gw,*)
+      write(out_gw,*) 'reading from file gwflow.input...'
+
+      !integers for input files
+      in_gw = 1230
+      in_hru_cell = 1231
+      in_res_cell = 1236
+      in_canal_cell = 1237
+      in_hru_pump_obs = 1238
+      in_lsu_cell = 1229
+      in_gw_minl = 1220
+      in_transit_time = 1235
+      in_tvh = 1420
+
+      !number of HRUs in the simulation
+      num_hru = sp_ob%hru
+
+
+      !read basic configuration from gwflow.codes --------------------------------------------------
+      write(out_gw,*) '     reading gwflow.codes...'
+      gw_heat_flag = 0   !default off unless 'heat' key present in gwflow.codes
+      open(in_gw,file='codes.gw')
+      read(in_gw,*) header                          !meta line
+      read(in_gw,'(a)') split_line_buf              !header row of key names (wide format)
+      call split_line(split_line_buf, code_keys, n_keys)
+      read(in_gw,'(a)') split_line_buf              !value row
+      call split_line(split_line_buf, split_fields, n_vals)
+      do icode=1,n_keys
+        if(icode > n_vals) exit
+        code_key = trim(code_keys(icode))
+        code_val = trim(split_fields(icode))
+        select case (trim(code_key))
+          case ('grid_type');     grid_type = trim(code_val)
+          case ('ncell');         read(code_val,*) ncell
+          case ('cell_size');     read(code_val,*) cell_size
+          case ('n_rows');        read(code_val,*) grid_nrow
+          case ('n_cols');        read(code_val,*) grid_ncol
+          case ('bc_type');       read(code_val,*) bc_type_int
+          case ('conn_type');     read(code_val,*) conn_type
+          case ('gw_soil');       read(code_val,*) gw_soil_flag
+          case ('satx');          read(code_val,*) gw_satx_flag
+          case ('pumpex');        read(code_val,*) gw_pumpex_flag
+          case ('tile');          read(code_val,*) gw_tile_flag
+          case ('res');           read(code_val,*) gw_res_flag
+          case ('wet');           read(code_val,*) gw_wet_flag
+          case ('fp');            read(code_val,*) gw_fp_flag
+          case ('canal');         read(code_val,*) gw_canal_flag
+          case ('solute');        read(code_val,*) gw_solute_flag
+          case ('heat');          read(code_val,*) gw_heat_flag
+          case ('time_step');     read(code_val,*) gw_time_step
+          case ('write_day');     read(code_val,*) gwflag_day
+          case ('write_mon');     read(code_val,*) gwflag_mon
+          case ('write_yr');      read(code_val,*) gwflag_yr
+          case ('write_aa');      read(code_val,*) gwflag_aa
+          case ('river_thresh');  read(code_val,*) gw_bed_change
+        end select
+      enddo
+      close(in_gw)
+
+      !--- print.prt overrides: when gwflow entries are listed in print.prt, override gwflow.input flags ---
+      !(applied before any gwflow output file is opened)
+      if(pco%gwflow_wb%already_read_in) then
+        gwflag_day = 0; gwflag_mon = 0; gwflag_yr = 0; gwflag_aa = 0
+        if(pco%gwflow_wb%d == 'y') gwflag_day = 1
+        if(pco%gwflow_wb%m == 'y') gwflag_mon = 1
+        if(pco%gwflow_wb%y == 'y') gwflag_yr  = 1
+        if(pco%gwflow_wb%a == 'y') gwflag_aa  = 1
+        write(out_gw,*) '          print.prt gwflow_wb overrides gwflow.input flags'
+      endif
+      !heat and solute balance output follow the water balance flags unless print.prt lists them
+      gwflag_heat_day = gwflag_day; gwflag_heat_yr = gwflag_yr; gwflag_heat_aa = gwflag_aa
+      gwflag_solute_day = gwflag_day; gwflag_solute_mon = gwflag_mon
+      gwflag_solute_yr = gwflag_yr; gwflag_solute_aa = gwflag_aa
+      if(pco%gwflow_obs%already_read_in) then
+        gwflag_obs_day = 0; gwflag_obs_mon = 0; gwflag_obs_yr = 0; gwflag_obs_aa = 0
+        if(pco%gwflow_obs%d == 'y') gwflag_obs_day = 1
+        if(pco%gwflow_obs%m == 'y') gwflag_obs_mon = 1
+        if(pco%gwflow_obs%y == 'y') gwflag_obs_yr  = 1
+        if(pco%gwflow_obs%a == 'y') gwflag_obs_aa  = 1
+        gwflag_obs = max(gwflag_obs_day, gwflag_obs_mon, gwflag_obs_yr, gwflag_obs_aa)
+        write(out_gw,*) '          print.prt gwflow_obs controls observation well output'
+      endif
+      if(pco%gwflow_pump%already_read_in) then
+        gwflag_pump = 0
+        if(pco%gwflow_pump%d == 'y' .or. pco%gwflow_pump%m == 'y' .or. &
+           pco%gwflow_pump%y == 'y' .or. pco%gwflow_pump%a == 'y') gwflag_pump = 1
+        write(out_gw,*) '          print.prt gwflow_pump controls HRU pumping output'
+      endif
+      if(pco%gwflow_heat%already_read_in) then
+        gwflag_heat_day = 0; gwflag_heat_yr = 0; gwflag_heat_aa = 0
+        if(pco%gwflow_heat%d == 'y') gwflag_heat_day = 1
+        if(pco%gwflow_heat%y == 'y') gwflag_heat_yr  = 1
+        if(pco%gwflow_heat%a == 'y') gwflag_heat_aa  = 1
+        write(out_gw,*) '          print.prt gwflow_heat controls heat balance output'
+      endif
+      if(pco%gwflow_solute%already_read_in) then
+        gwflag_solute_day = 0; gwflag_solute_mon = 0; gwflag_solute_yr = 0; gwflag_solute_aa = 0
+        if(pco%gwflow_solute%d == 'y') gwflag_solute_day = 1
+        if(pco%gwflow_solute%m == 'y') gwflag_solute_mon = 1
+        if(pco%gwflow_solute%y == 'y') gwflag_solute_yr  = 1
+        if(pco%gwflow_solute%a == 'y') gwflag_solute_aa  = 1
+        write(out_gw,*) '          print.prt gwflow_solute controls solute balance output'
+      endif
+      if(pco%gwflow_flux%already_read_in) then
+        gwflag_flux = 0
+        if(pco%gwflow_flux%d == 'y' .or. pco%gwflow_flux%y == 'y') gwflag_flux = 1
+        write(out_gw,*) '          print.prt gwflow_flux controls canal/pond/tile/chan diagnostic output'
+      endif
+
+      !structured uses the same 1..ncell id space as unstructured, so cell_id_list is the identity
+      if(grid_type == "structured") then
+        allocate(cell_id_list(ncell))
+        do i=1,ncell
+          cell_id_list(i) = i
+        enddo
+      endif
+
+      !map default bc type to all cells (per-cell overrides applied during gwflow.cells read)
+      allocate(bc_type_array(ncell))
+      do i=1,ncell
+        bc_type_array(i) = bc_type_int
+      enddo
+
+      !check connections (HRU-cell or LSU-cell) -----------------------------------------------------------------------
+      write(out_gw,*) '     checking for connection (HRU, LSU) files...'
+      if(conn_type == 1) then !HRU-cell
+        inquire(file='hrucell.gw',exist=i_exist)
+        if(i_exist) then
+          hru_cells_link = 1
+          lsu_cells_link = 0
+          write(out_gw,*) '          found gwflow.hrucell: proceed'
+        else
+          hru_cells_link = 0
+          inquire(file='lsucell.gw',exist=i_exist) !try LSU-cell connection instead
+          if(i_exist) then
+            lsu_cells_link = 1
+            gw_soil_flag = 0 !gw-->soil transfer can occur only for HRU-cell connection
+            gw_wet_flag = 0 !wetland transfer can occur only for HRU-cell connection
+            write(out_gw,*) '          gwflow.hrucell not found: using gwflow.lsucell'
+            write(out_gw,*) '          gwflow.lsucell: gw-->soil transfer not simulated'
+            write(out_gw,*) '          gwflow.lsucell: gw-->wetland transfer not simulated'
+          endif
+        endif
+      elseif(conn_type == 2) then !LSU-cell
+        inquire(file='lsucell.gw',exist=i_exist)
+        if(i_exist) then
+          lsu_cells_link = 1
+          hru_cells_link = 0
+          gw_soil_flag = 0 !gw-->soil transfer cannot occur if LSU-cell linkage is active
+          gw_wet_flag = 0 !wetland transfer can occur only for HRU-cell connection
+          write(out_gw,*) '          found gwflow.lsucell: proceed'
+          write(out_gw,*) '          gwflow.lsucell: gw-->soil transfer not simulated'
+          write(out_gw,*) '          gwflow.lsucell: gw-->wetland transfer not simulated'
+        else
+          lsu_cells_link = 0
+          inquire(file='hrucell.gw',exist=i_exist) !try HRU-cell connection instead
+          if(i_exist) then
+            hru_cells_link = 1
+            write(out_gw,*) '          gwflow.lsucell not found: using gwflow.hrucell'
+          endif
+        endif
+      else !cannot find connection file; write out message and stop
+        write(out_gw,*) '          neither gwflow.hrucell or gwflow.lsucell found; stop simulation'
+        stop
+      endif
+
+      !aquifer and streambed parameters from gwflow.zones ------------------------------------------
+      write(out_gw,*) '     reading gwflow.zones...'
+      open(in_gw,file='zones.gw')
+      read(in_gw,*) header                          !meta line
+      read(in_gw,*) header                          !column header
+      !pre-pass to count zone rows
+      nzones_aquK = 0
+      do
+        read(in_gw,'(a)',iostat=eof) split_line_buf
+        if(eof /= 0) exit
+        if(len_trim(split_line_buf) == 0) cycle
+        nzones_aquK = nzones_aquK + 1
+      enddo
+      nzones_aquSy = nzones_aquK
+      nzones_strK = nzones_aquK
+      nzones_strbed = nzones_aquK
+      allocate(zones_aquK(nzones_aquK), source = 0.)
+      allocate(zones_aquSy(nzones_aquSy), source = 0.)
+      allocate(zones_strK(nzones_strK), source = 0.)
+      allocate(zones_strbed(nzones_strbed), source = 0.)
+      allocate(zones_Kt(nzones_aquK), source = 0.)
+      rewind(in_gw)
+      read(in_gw,*) header
+      read(in_gw,*) header
+      do i=1,nzones_aquK
+        read(in_gw,'(a)') split_line_buf
+        call split_line(split_line_buf, split_fields, split_nf)
+        read(split_fields(2),*) zones_aquK(i)
+        read(split_fields(3),*) zones_aquSy(i)
+        read(split_fields(4),*) zones_strK(i)
+        read(split_fields(5),*) zones_strbed(i)
+        if(split_nf >= 6 .and. trim(split_fields(6)) /= 'null') then   !thermal_K (heat)
+          read(split_fields(6),*) zones_Kt(i)
+        endif
+      enddo
+      close(in_gw)
+
+      !grid cell information from gwflow.cells -----------------------------------------------------
+      write(out_gw,*) '     reading gwflow.cells...'
+      allocate(gw_state(ncell))
+      allocate(delay(ncell), source = 0.)
+      allocate(cell_strK_over(ncell), source = 0.)
+      allocate(cell_strthick_over(ncell), source = 0.)
+      allocate(cell_tile_depth_over(ncell), source = 0.)
+      allocate(cell_tile_area_over(ncell), source = 0.)
+      allocate(cell_tile_K_over(ncell), source = 0.)
+      allocate(cell_strK_set(ncell));       cell_strK_set = .false.
+      allocate(cell_strthick_set(ncell));   cell_strthick_set = .false.
+      allocate(cell_tile_depth_set(ncell)); cell_tile_depth_set = .false.
+      allocate(cell_tile_area_set(ncell));  cell_tile_area_set = .false.
+      allocate(cell_tile_K_set(ncell));     cell_tile_K_set = .false.
+      !structured-grid row/col per cell, used by gwflow_output to build the gis_id for georeferenced
+      !per-cell output. Source is optional trailing columns 19 (row) and 20 (col) in gwflow.cells;
+      !default 0 when absent (unstructured, or until the editor adds them for structured).
+      allocate(cell_row(ncell), source = 0)
+      allocate(cell_col(ncell), source = 0)
+      allocate(cell_init_temp(ncell), source = 0.)
+      allocate(cell_gis_id(ncell), source = 0)
+      allocate(cell_name(ncell))
+      open(in_gw,file='cells.gw')
+      read(in_gw,*) header                          !meta line
+      read(in_gw,*) header                          !column header
+      do i=1,ncell
+        read(in_gw,'(a)') split_line_buf
+        call split_line(split_line_buf, split_fields, split_nf)
+        if(split_nf < 14) then
+          write(out_gw,*) 'ERROR: gwflow.cells row has too few columns at i=',i
+          stop
+        endif
+        !cols: 1 id  2 name  3 gis_id  4 status  5 elev  6 thck  7 K_zone  8 Sy_zone
+        !      9 delay  10 exdp  11 init  12 x  13 y  14 area  (then optional overrides/row/col/init_temp)
+        read(split_fields(1),*) cell_id_in
+        if (cell_id_in /= i) then
+          write(out_gw,*) 'ERROR: gwflow.cells row out of order at i=',i,' cell_id=',cell_id_in
+          stop
+        endif
+        cell_name(i) = trim(split_fields(2))
+        read(split_fields(3),*) cell_gis_id(i)
+        read(split_fields(4),*) gw_state(i)%stat
+        read(split_fields(5),*) gw_state(i)%elev
+        read(split_fields(6),*) gw_state(i)%thck
+        read(split_fields(7),*) K_zone
+        read(split_fields(8),*) Sy_zone
+        read(split_fields(9),*) delay(i)
+        read(split_fields(10),*) gw_state(i)%exdp
+        read(split_fields(11),*) gw_state(i)%init
+        read(split_fields(12),*) gw_state(i)%xcrd
+        read(split_fields(13),*) gw_state(i)%ycrd
+        read(split_fields(14),*) gw_state(i)%area
+        gw_state(i)%zone = K_zone
+        gw_state(i)%botm = gw_state(i)%elev - gw_state(i)%thck
+        gw_state(i)%hydc = zones_aquK(K_zone)
+        gw_state(i)%spyd = zones_aquSy(Sy_zone)
+        if(gw_state(i)%init < gw_state(i)%botm) then
+          gw_state(i)%init = gw_state(i)%botm
+        endif
+        !optional override columns (null sentinel): strK, strthick, bc_type, tile_depth, tile_area, tile_K
+        if(split_nf >= 15 .and. trim(split_fields(15)) /= 'null') then
+          read(split_fields(15),*) cell_strK_over(i)
+          cell_strK_set(i) = .true.
+        endif
+        if(split_nf >= 16 .and. trim(split_fields(16)) /= 'null') then
+          read(split_fields(16),*) cell_strthick_over(i)
+          cell_strthick_set(i) = .true.
+        endif
+        if(split_nf >= 17 .and. trim(split_fields(17)) /= 'null') then
+          read(split_fields(17),*) bc_type_array(i)
+        endif
+        if(split_nf >= 18 .and. trim(split_fields(18)) /= 'null') then
+          read(split_fields(18),*) cell_tile_depth_over(i)
+          cell_tile_depth_set(i) = .true.
+        endif
+        if(split_nf >= 19 .and. trim(split_fields(19)) /= 'null') then
+          read(split_fields(19),*) cell_tile_area_over(i)
+          cell_tile_area_set(i) = .true.
+        endif
+        if(split_nf >= 20 .and. trim(split_fields(20)) /= 'null') then
+          read(split_fields(20),*) cell_tile_K_over(i)
+          cell_tile_K_set(i) = .true.
+        endif
+        if(split_nf >= 21 .and. trim(split_fields(21)) /= 'null') then   !row (structured)
+          read(split_fields(21),*) cell_row(i)
+        endif
+        if(split_nf >= 22 .and. trim(split_fields(22)) /= 'null') then   !col (structured)
+          read(split_fields(22),*) cell_col(i)
+        endif
+        if(split_nf >= 23 .and. trim(split_fields(23)) /= 'null') then   !init_temp (heat)
+          read(split_fields(23),*) cell_init_temp(i)
+        endif
+      enddo
+      close(in_gw)
+
+      !cell-cell connections from gwflow.cellcons --------------------------------------------------
+      write(out_gw,*) '     reading gwflow.cellcons...'
+      allocate(cell_con(ncell))
+      open(in_gw,file='cellcon.gw')
+      read(in_gw,*) header                          !meta line
+      read(in_gw,*) header                          !column header
+      do i=1,ncell
+        read(in_gw,'(a)') split_line_buf
+        call split_line(split_line_buf, split_fields, split_nf)
+        if(split_nf < 2) then
+          write(out_gw,*) 'ERROR: gwflow.cellcons row has too few columns at i=',i
+          stop
+        endif
+        read(split_fields(1),*) cell_id_in
+        if (cell_id_in /= i) then
+          write(out_gw,*) 'ERROR: gwflow.cellcons row out of order at i=',i,' cell_id=',cell_id_in
+          stop
+        endif
+        read(split_fields(2),*) gw_state(i)%ncon
+        allocate(cell_con(i)%cell_id(gw_state(i)%ncon))
+        do j=1,gw_state(i)%ncon
+          read(split_fields(2+j),*) cell_con(i)%cell_id(j)
+        enddo
+      enddo
+      close(in_gw)
+
+
+
+      !cell operations ------------------------------------------------------------------------------------------------
+      !count the number of active cells
+      write(out_gw,*) '     counting number of active cells'
+      num_active = 0
+      do i=1,ncell
+        if(gw_state(i)%stat > 0) then
+          num_active = num_active + 1
+        endif
+      enddo
+
+      !calculate active area of the watershed, for the gwflow grid
+      gwflow_area = 0.
+      do i=1,ncell
+        if(gw_state(i)%stat == 1) then
+          gwflow_area = gwflow_area + gw_state(i)%area
+        endif
+      enddo
+
+      !for boundary cells: store id of the closest active cell
+      allocate(gw_bound_near(ncell), source = 0)
+      allocate(gw_bound_dist(ncell), source = 0.)
+      do i=1,ncell
+        if(gw_state(i)%stat == 2) then
+          min_dist = 1000000.
+          do j=1,ncell
+            if(gw_state(j)%stat == 1) then
+              dist_x = gw_state(i)%xcrd - gw_state(j)%xcrd
+              dist_y = gw_state(i)%ycrd - gw_state(j)%ycrd
+              distance = sqrt((dist_x)**2 + (dist_y)**2)
+              if(distance.lt.min_dist) then
+                min_dist = distance
+                active_cell = j
+              endif
+            endif
+          enddo
+          gw_bound_near(i) = active_cell
+          gw_bound_dist(i) = min_dist
+        endif
+      enddo
+
+      !output config from gwflow.outputs ------------------------------------------------------------
+      write(out_gw,*) '     reading gwflow.outputs...'
+      gw_num_output = 0
+      gw_num_obs_wells = 0
+      gw_cell_obs_ss = 0
+      open(in_gw,file='outputs.gw')
+      read(in_gw,*) header                          !meta line
+      read(in_gw,*) header                          !column header
+      !pre-pass: count head_output_time and observation_cell entries
+      do
+        read(in_gw,'(a)',iostat=eof) split_line_buf
+        if(eof /= 0) exit
+        if(len_trim(split_line_buf) == 0) cycle
+        call split_line(split_line_buf, split_fields, split_nf)
+        if(split_nf < 2) cycle
+        select case (trim(split_fields(1)))
+          case ('head_output_time'); gw_num_output = gw_num_output + 1
+          case ('observation_cell'); gw_num_obs_wells = gw_num_obs_wells + 1
+        end select
+      enddo
+      allocate(gw_output_yr(gw_num_output), source = 0)
+      allocate(gw_output_day(gw_num_output), source = 0)
+      allocate(gw_obs_cells_init(gw_num_obs_wells), source = 0)
+      allocate(gw_obs_cells(gw_num_obs_wells), source = 0)
+      allocate(gw_obs_head(gw_num_obs_wells), source = 0.)
+      !re-read for actual values
+      rewind(in_gw)
+      read(in_gw,*) header
+      read(in_gw,*) header
+      n = 0
+      m = 0
+      do
+        read(in_gw,'(a)',iostat=eof) split_line_buf
+        if(eof /= 0) exit
+        if(len_trim(split_line_buf) == 0) cycle
+        call split_line(split_line_buf, split_fields, split_nf)
+        if(split_nf < 2) cycle
+        select case (trim(split_fields(1)))
+          case ('head_output_time')
+            n = n + 1
+            read(split_fields(2),*) combined_yrday
+            gw_output_yr(n) = combined_yrday / 1000
+            gw_output_day(n) = mod(combined_yrday, 1000)
+          case ('observation_cell')
+            m = m + 1
+            read(split_fields(2),*) gw_obs_cells_init(m)
+          case ('detail_debug_cell')
+            read(split_fields(2),*) gw_cell_obs_ss
+        end select
+      enddo
+      close(in_gw)
+      !(observation well output files are opened in gwflow_output_init)
+      gw_output_index = 1
+      !if structured grid, then convert cell ids
+      if(grid_type == "structured") then
+        do k=1,gw_num_obs_wells
+          gw_obs_cells(k) = cell_id_list(gw_obs_cells_init(k))
+        enddo
+      else
+        do k=1,gw_num_obs_wells
+          gw_obs_cells(k) = gw_obs_cells_init(k)
+        enddo
+      endif
+
+      !channel cell information (cells that are connected to SWAT+ chandeg channels) ----------------------------------
+      !(channel cell information was already read: gwflow_chan_read subroutine)
+      write(out_gw,*)
+      write(out_gw,*) 'additional gwflow preparation...'
+      write(out_gw,*)
+      write(out_gw,*) '     processing channel-cell information'
+      allocate(gw_chan_cell(sp_ob%gwflow))
+      allocate(gw_chan_K(sp_ob%gwflow))
+      allocate(gw_chan_thick(sp_ob%gwflow))
+      do i=1,sp_ob%gwflow
+        if(grid_type == "structured") then
+          gw_chan_cell(i) = cell_id_list(gw_chan_id(i))
+        elseif(grid_type == "unstructured") then
+          gw_chan_cell(i) = gw_chan_id(i)
+        endif
+        gw_chan_K(i) = zones_strK(gw_chan_zone(i))
+        gw_chan_thick(i) = zones_strbed(gw_chan_zone(i))
+        !apply per-cell strK/strthick overrides from gwflow.cells (replaces gwflow.array_strK/strthick)
+        if(cell_strK_set(gw_chan_cell(i))) then
+          gw_chan_K(i) = cell_strK_over(gw_chan_cell(i))
+        endif
+        if(cell_strthick_set(gw_chan_cell(i))) then
+          gw_chan_thick(i) = cell_strthick_over(gw_chan_cell(i))
+        endif
+      enddo
+
+      !channel observation cells: build active-cell id list from the obs flag column of chancell.gw
+      if(gw_chan_obs_flag == 1) then
+        allocate(gw_chan_obs_cell(gw_chan_nobs))
+        j = 0
+        do i=1,sp_ob%gwflow
+          if(gw_chan_obs(i) > 0) then
+            j = j + 1
+            gw_chan_obs_cell(j) = gw_chan_cell(i)
+          endif
+        enddo
+        if(gwflag_flux == 1) then
+          open(out_gwsw_chanobs_flow,file='gwflow_chan_obs_flow_day.txt')
+          write(out_gwsw_chanobs_flow,*) 'gwflow daily gw-channel exchange volume (m3) at observation cells'
+          if(gw_solute_flag == 1) then
+            open(out_gwsw_chanobs_no3,file='gwflow_chan_obs_no3_day.txt')
+            write(out_gwsw_chanobs_no3,*) 'gwflow daily gw-channel NO3 mass (g) at observation cells'
+          endif
+        endif
+      endif
+
+
+      !prepare source-sink arrays and options -------------------------------------------------------------------------
+      write(out_gw,*) '     allocate and prepare source-sink arrays...'
+
+      !allocate cell source/sink arrays
+      allocate(gw_hyd_ss(ncell))
+      do i=1,ncell
+        gw_hyd_ss(i)%rech = 0.
+        gw_hyd_ss(i)%gwet = 0.
+        gw_hyd_ss(i)%gwsw = 0.
+        gw_hyd_ss(i)%swgw = 0.
+        gw_hyd_ss(i)%satx = 0.
+        gw_hyd_ss(i)%soil = 0.
+        gw_hyd_ss(i)%latl = 0.
+        gw_hyd_ss(i)%bndr = 0.
+        gw_hyd_ss(i)%ppag = 0.
+        gw_hyd_ss(i)%ppdf = 0.
+        gw_hyd_ss(i)%ppex = 0.
+        gw_hyd_ss(i)%tile = 0.
+        gw_hyd_ss(i)%resv = 0.
+        gw_hyd_ss(i)%wetl = 0.
+        gw_hyd_ss(i)%fpln = 0.
+        gw_hyd_ss(i)%canl = 0.
+        gw_hyd_ss(i)%pond = 0.
+        gw_hyd_ss(i)%phyt = 0.
+        gw_hyd_ss(i)%totl = 0.
+      enddo
+
+      !allocate grid source/sink arrays
+      !annual
+      allocate(gw_hyd_ss_yr(ncell))
+      do i=1,ncell
+        gw_hyd_ss_yr(i)%rech = 0.
+        gw_hyd_ss_yr(i)%gwet = 0.
+        gw_hyd_ss_yr(i)%gwsw = 0.
+        gw_hyd_ss_yr(i)%swgw = 0.
+        gw_hyd_ss_yr(i)%satx = 0.
+        gw_hyd_ss_yr(i)%soil = 0.
+        gw_hyd_ss_yr(i)%latl = 0.
+        gw_hyd_ss_yr(i)%bndr = 0.
+        gw_hyd_ss_yr(i)%ppag = 0.
+        gw_hyd_ss_yr(i)%ppdf = 0.
+        gw_hyd_ss_yr(i)%ppex = 0.
+        gw_hyd_ss_yr(i)%tile = 0.
+        gw_hyd_ss_yr(i)%resv = 0.
+        gw_hyd_ss_yr(i)%wetl = 0.
+        gw_hyd_ss_yr(i)%fpln = 0.
+        gw_hyd_ss_yr(i)%canl = 0.
+        gw_hyd_ss_yr(i)%pond = 0.
+        gw_hyd_ss_yr(i)%phyt = 0.
+      enddo
+      !average annual (accumulates yearly totals before they are zeroed)
+      allocate(gw_hyd_ss_aa(ncell))
+      allocate(gw_head_sum_aa(ncell))
+      do i=1,ncell
+        gw_hyd_ss_aa(i)%rech = 0.
+        gw_hyd_ss_aa(i)%gwet = 0.
+        gw_hyd_ss_aa(i)%gwsw = 0.
+        gw_hyd_ss_aa(i)%swgw = 0.
+        gw_hyd_ss_aa(i)%satx = 0.
+        gw_hyd_ss_aa(i)%soil = 0.
+        gw_hyd_ss_aa(i)%latl = 0.
+        gw_hyd_ss_aa(i)%bndr = 0.
+        gw_hyd_ss_aa(i)%ppag = 0.
+        gw_hyd_ss_aa(i)%ppdf = 0.
+        gw_hyd_ss_aa(i)%ppex = 0.
+        gw_hyd_ss_aa(i)%tile = 0.
+        gw_hyd_ss_aa(i)%resv = 0.
+        gw_hyd_ss_aa(i)%wetl = 0.
+        gw_hyd_ss_aa(i)%fpln = 0.
+        gw_hyd_ss_aa(i)%canl = 0.
+        gw_hyd_ss_aa(i)%pond = 0.
+        gw_hyd_ss_aa(i)%phyt = 0.
+        gw_head_sum_aa(i) = 0.
+      enddo
+      !monthly
+      allocate(gw_hyd_ss_mo(ncell))
+      do i=1,ncell
+        gw_hyd_ss_mo(i)%rech = 0.
+        gw_hyd_ss_mo(i)%gwet = 0.
+        gw_hyd_ss_mo(i)%gwsw = 0.
+        gw_hyd_ss_mo(i)%swgw = 0.
+        gw_hyd_ss_mo(i)%satx = 0.
+        gw_hyd_ss_mo(i)%soil = 0.
+        gw_hyd_ss_mo(i)%latl = 0.
+        gw_hyd_ss_mo(i)%bndr = 0.
+        gw_hyd_ss_mo(i)%ppag = 0.
+        gw_hyd_ss_mo(i)%ppdf = 0.
+        gw_hyd_ss_mo(i)%ppex = 0.
+        gw_hyd_ss_mo(i)%tile = 0.
+        gw_hyd_ss_mo(i)%resv = 0.
+        gw_hyd_ss_mo(i)%wetl = 0.
+        gw_hyd_ss_mo(i)%fpln = 0.
+        gw_hyd_ss_mo(i)%canl = 0.
+        gw_hyd_ss_mo(i)%pond = 0.
+        gw_hyd_ss_mo(i)%phyt = 0.
+      enddo
+
+      !recharge
+      write(out_gw,*) '          recharge from soil'
+      !flux output file
+      allocate(gwflow_perc(sp_ob%hru))
+      gwflow_perc = 0.
+
+      !gwet
+      write(out_gw,*) '          groundwater ET'
+      !flux output file
+      allocate(etremain(sp_ob%hru))
+      etremain = 0.
+
+      !lateral flow within aquifer ----------------------------------------------------------------
+      do i=1,ncell
+        allocate(cell_con(i)%latl(gw_state(i)%ncon))
+        allocate(cell_con(i)%sat(gw_state(i)%ncon))
+        do j=1,gw_state(i)%ncon
+          cell_con(i)%latl(j) = 0.
+          cell_con(i)%sat(j) = 0.
+        enddo
+      enddo
+
+      !groundwater-channel exchange ---------------------------------------------------------------
+      write(out_gw,*) '          groundwater-channel exchange'
+      !flux output file
+      !determine the number of cells that are linked to each channel
+      allocate(gw_chan_info(sp_ob%chandeg))
+      do i=1,sp_ob%gwflow
+        channel = gw_chan_chan(i) !channel connected to cell
+        gw_chan_info(channel)%ncon = gw_chan_info(channel)%ncon + 1
+      enddo
+      !allocate arrays holding the cell information
+      do i=1,sp_ob%chandeg
+        allocate(gw_chan_info(i)%cells(gw_chan_info(i)%ncon))
+        allocate(gw_chan_info(i)%leng(gw_chan_info(i)%ncon))
+        allocate(gw_chan_info(i)%elev(gw_chan_info(i)%ncon))
+        allocate(gw_chan_info(i)%hydc(gw_chan_info(i)%ncon))
+        allocate(gw_chan_info(i)%thck(gw_chan_info(i)%ncon))
+        allocate(gw_chan_info(i)%dpzn(gw_chan_info(i)%ncon))
+        gw_chan_info(i)%ncon = 0
+      enddo
+      !populate the array holding the cell numbers for each channel
+      do i=1,sp_ob%gwflow
+        channel = gw_chan_chan(i) !channel connected to cell
+        gw_chan_info(channel)%ncon = gw_chan_info(channel)%ncon + 1
+        gw_chan_info(channel)%cells(gw_chan_info(channel)%ncon) = gw_chan_cell(i)
+        gw_chan_info(channel)%leng(gw_chan_info(channel)%ncon) = gw_chan_len(i)
+        gw_chan_info(channel)%elev(gw_chan_info(channel)%ncon) = gw_chan_elev(i)
+        gw_chan_info(channel)%hydc(gw_chan_info(channel)%ncon) = gw_chan_K(i)
+        gw_chan_info(channel)%thck(gw_chan_info(channel)%ncon) = gw_chan_thick(i)
+        if(gw_chan_dep_flag == 1) then !depth zone for daily channel depth
+          gw_chan_info(channel)%dpzn(gw_chan_info(channel)%ncon) = gw_chan_dpzn(i)
+        endif
+      enddo
+
+      !groundwater-->soil transfer ----------------------------------------------------------------
+      if(gw_soil_flag == 1) then
+        write(out_gw,*) '          groundwater-->soil transfer'
+        !flux output file
+      endif
+
+      !general method: find closest channel for each grid cell
+      !(this is used for saturation excess flow, tile drains)
+      allocate(cell_channel(ncell))
+      cell_channel = 0
+      do i=1,ncell
+        if(gw_state(i)%stat > 0) then
+          !find the closest channel cell
+          min_dist = 1000000.
+          chan_cell = 0
+          do k=1,sp_ob%gwflow
+            dist_x = gw_state(i)%xcrd - gw_state(gw_chan_cell(k))%xcrd !m
+            dist_y = gw_state(i)%ycrd - gw_state(gw_chan_cell(k))%ycrd !m
+            distance = sqrt((dist_x)**2 + (dist_y)**2)
+            if(distance.lt.min_dist) then
+              min_dist = distance
+              chan_cell = k
+            endif
+          enddo
+          channel = gw_chan_chan(chan_cell) !channel connected to channel cell
+          cell_channel(i) = channel
+        endif
+      enddo
+
+      !groundwater saturation excess flow ---------------------------------------------------------
+      !for each grid cell: find the nearest channel cell
+      !saturation excess water is then added to the stream channel that is connected to the channel cell
+      if(gw_satx_flag == 1) then
+        write(out_gw,*) '          groundwater saturation excess flow'
+        allocate(gw_satx_info(sp_ob%chandeg))
+        !count the cells connected to each channel
+        do i=1,ncell
+          if(gw_state(i)%stat > 0) then
+            channel = cell_channel(i) !channel connected to cell
+            gw_satx_info(channel)%ncon = gw_satx_info(channel)%ncon + 1
+          endif
+        enddo
+        !allocate array for the set of cells connected to each channel
+        do i=1,sp_ob%chandeg
+          allocate(gw_satx_info(i)%cells(gw_satx_info(i)%ncon))
+          gw_satx_info(i)%ncon = 0
+        enddo
+        !for each cell - tie to a channel
+        do i=1,ncell
+          if(gw_state(i)%stat > 0) then
+            channel = cell_channel(i) !channel connected to cell
+            gw_satx_info(channel)%ncon = gw_satx_info(channel)%ncon + 1
+            gw_satx_info(channel)%cells(gw_satx_info(channel)%ncon) = i
+          endif
+        enddo
+        satx_count = 0
+        !flux output file
+      endif
+
+      !groundwater pumping (irrigation) -----------------------------------------------------------
+      write(out_gw,*) '          groundwater pumping for irrigation'
+      !flux output file
+      !track pumped volume for each irrigated HRU
+      allocate(hru_pump(sp_ob%hru))
+      allocate(hru_pump_mo(sp_ob%hru))
+      allocate(hru_pump_yr(sp_ob%hru))
+      allocate(hru_pump_aa(sp_ob%hru))
+      hru_pump = 0.
+      hru_pump_mo = 0.
+      hru_pump_yr = 0.
+      hru_pump_aa = 0.
+      if(gwflag_pump == 1) then
+        open(out_hru_pump_day,file='gwflow_hru_pump_day.txt')
+        write(out_hru_pump_day,*) 'gwflow HRU pumping for irrigation (m3/day)'
+        write(out_hru_pump_day,'(4a6,2a8,a18,a13)') &
+          'jday','mon','day','yr','unit','gis_id','name','pump_allo'
+        write(out_hru_pump_day,'(4a6,2a8,a18,a13)') &
+          '','','','','','','','m3/day'
+        open(out_hru_pump_mo,file='gwflow_hru_pump_mon.txt')
+        write(out_hru_pump_mo,*) 'gwflow HRU pumping for irrigation monthly total (m3)'
+        write(out_hru_pump_mo,'(4a6,2a8,a18,a13)') &
+          'jday','mon','day','yr','unit','gis_id','name','pump_allo'
+        write(out_hru_pump_mo,'(4a6,2a8,a18,a13)') &
+          '','','','','','','','m3'
+        open(out_hru_pump_yr,file='gwflow_hru_pump_yr.txt')
+        write(out_hru_pump_yr,*) 'gwflow HRU pumping for irrigation annual total (m3)'
+        write(out_hru_pump_yr,'(4a6,2a8,a18,a13)') &
+          'jday','mon','day','yr','unit','gis_id','name','pump_allo'
+        write(out_hru_pump_yr,'(4a6,2a8,a18,a13)') &
+          '','','','','','','','m3'
+        open(out_hru_pump_aa,file='gwflow_hru_pump_aa.txt')
+        write(out_hru_pump_aa,*) 'gwflow HRU pumping for irrigation avg annual (m3/yr)'
+        write(out_hru_pump_aa,'(4a6,2a8,a18,a13)') &
+          'jday','mon','day','yr','unit','gis_id','name','pump_allo'
+        write(out_hru_pump_aa,'(4a6,2a8,a18,a13)') &
+          '','','','','','','','m3/yr'
+      endif
+      inquire(file='hru_pump.gw',exist=i_exist)
+      if(i_exist) then
+        hru_pump_flag = 1
+        open(in_hru_pump_obs,file='hru_pump.gw')
+        read(in_hru_pump_obs,*)
+        read(in_hru_pump_obs,*) num_hru_pump_obs
+        allocate(hru_pump_ids(num_hru_pump_obs))
+        do i=1,num_hru_pump_obs
+          read(in_hru_pump_obs,*) hru_pump_ids(i)
+        enddo
+        allocate(hru_pump_obs(num_hru_pump_obs))
+        hru_pump_obs = 0.
+        if(gwflag_pump == 1) then
+          open(out_hru_pump_obs,file='gwflow_cell_wb_ppag_obs_day.txt')
+          write(out_hru_pump_obs,*) 'Daily groundwater pumping (m3) for specified HRUs'
+          write(out_hru_pump_obs,*) 'Columns = HRUs (same order as in gwflow.hru_pump_observe)'
+          write(out_hru_pump_obs,*) 'Time(day)    Daily pumping (m3)'
+        endif
+      endif
+
+      !groundwater pumping (specified) ------------------------------------------------------------
+
+      if(gw_pumpex_flag == 1) then
+      inquire(file='pumpex.gw',exist=i_exist)
+      if(i_exist) then
+        write(out_gw,*) '          groundwater pumping external (gwflow.pumpex found)'
+        !flat format: meta + header + one row per pump-period (name cell_id rate yr_start dy_start yr_end dy_end)
+        !rows for the same cell_id are consecutive; pump = a run of same-cell rows
+        open(in_gw,file='pumpex.gw')
+        read(in_gw,*) header
+        read(in_gw,*) header
+        !first pass: count distinct pumps (consecutive cell_id runs)
+        gw_npumpex = 0
+        prev_cell = -1
+        do
+          read(in_gw,*,iostat=eof) header, pumpex_cell
+          if(eof /= 0) exit
+          if(pumpex_cell /= prev_cell) then
+            gw_npumpex = gw_npumpex + 1
+            prev_cell = pumpex_cell
+          endif
+        enddo
+        allocate(gw_pumpex_cell(gw_npumpex), source = 0)
+        allocate(gw_pumpex_nperiods(gw_npumpex), source = 0)
+        allocate(gw_pumpex_dates(gw_npumpex,2,1000))
+        allocate(gw_pumpex_rates(gw_npumpex,1000), source = 0.)
+        !second pass: fill per-pump arrays
+        rewind(in_gw)
+        read(in_gw,*) header
+        read(in_gw,*) header
+        ipump = 0
+        prev_cell = -1
+        do
+          read(in_gw,*,iostat=eof) header, pumpex_cell, &
+            gw_pumpex_rates_tmp, pe_yr_s, pe_dy_s, pe_yr_e, pe_dy_e
+          if(eof /= 0) exit
+          if(pumpex_cell /= prev_cell) then
+            ipump = ipump + 1
+            prev_cell = pumpex_cell
+            if(grid_type == "structured") then
+              gw_pumpex_cell(ipump) = cell_id_list(pumpex_cell)
+            else
+              gw_pumpex_cell(ipump) = pumpex_cell
+            endif
+          endif
+          iper = gw_pumpex_nperiods(ipump) + 1
+          gw_pumpex_nperiods(ipump) = iper
+          gw_pumpex_rates(ipump,iper) = gw_pumpex_rates_tmp
+          !calendar (year, day-of-year) -> sim day-count (matches gwflow.ponds)
+          if(pe_yr_s < time%yrc) then
+            gw_pumpex_dates(ipump,1,iper) = 1
+          else
+            gw_pumpex_dates(ipump,1,iper) = (pe_yr_s-time%yrc)*365 + pe_dy_s
+          endif
+          if(pe_yr_e < time%yrc) then
+            gw_pumpex_dates(ipump,2,iper) = 1
+          else
+            gw_pumpex_dates(ipump,2,iper) = (pe_yr_e-time%yrc)*365 + pe_dy_e
+          endif
+        enddo
+        close(in_gw)
+        gw_daycount = 1
+        !flux output file
+      else
+        write(out_gw,*) '          gwflow.pumpex not found; pumping not simulated'
+      endif
+      endif !end specified pumping
+
+      !tile drainage outflow ----------------------------------------------------------------------
+      !tile drain cell information
+      if(gw_tile_flag == 1) then
+      inquire(file='tile.gw',exist=i_exist)
+      if(i_exist) then
+        write(out_gw,*) '          groundwater-tile drainage outflow (gwflow.tiles found)'
+        open(in_gw,file='tile.gw')
+        read(in_gw,*) header
+        !read in tile parameters
+        allocate(gw_tile_depth(ncell))
+        allocate(gw_tile_drain_area(ncell))
+        allocate(gw_tile_K(ncell))
+        read(in_gw,*) tile_depth_val
+        read(in_gw,*) tile_drain_area_val
+        read(in_gw,*) tile_K_val
+        do i=1,ncell
+          gw_tile_depth(i) = tile_depth_val
+          gw_tile_drain_area(i) = tile_drain_area_val
+          gw_tile_K(i) = tile_K_val
+        enddo
+        !apply per-cell tile overrides from gwflow.cells (replaces gwflow.array_tile{depth,area,K})
+        do i=1,ncell
+          if(cell_tile_depth_set(i)) gw_tile_depth(i) = cell_tile_depth_over(i)
+          if(cell_tile_area_set(i))  gw_tile_drain_area(i) = cell_tile_area_over(i)
+          if(cell_tile_K_set(i))     gw_tile_K(i) = cell_tile_K_over(i)
+        enddo
+        !read in tile cell groups (if any)
+        read(in_gw,*) gw_tile_group_flag
+        if(gw_tile_group_flag.eq.1) then
+          read(in_gw,*) gw_tile_num_group
+          allocate(gw_tile_groups(gw_tile_num_group,5000))
+          do i=1,gw_tile_num_group
+            read(in_gw,*)
+            read(in_gw,*) num_tile_cells(i)
+            do j=1,num_tile_cells(i)
+              read(in_gw,*) gw_tile_groups(i,j)
+            enddo
+          enddo
+          if(gwflag_flux == 1) then
+            open(out_tile_cells,file='gwflow_tile_group_day.txt')
+            write(out_tile_cells,*) 'gwflow daily tile drain flow (m3/sec) per cell group'
+          endif
+        endif
+        !read in tile cell flag (0=no tile; 1=tiles are present)
+        read(in_gw,*) header
+        if(grid_type == "structured") then
+          do i=1,grid_nrow
+            read(in_gw,*) (grid_int(i,j),j=1,grid_ncol)
+          enddo
+          do i=1,grid_nrow
+            do j=1,grid_ncol
+              if(cell_id_usg(i,j) > 0) then
+                gw_state(cell_id_usg(i,j))%tile = grid_int(i,j)
+              endif
+            enddo
+          enddo
+        elseif(grid_type == "unstructured") then
+          do i=1,ncell
+            read(in_gw,*) gw_state(i)%tile
+          enddo
+        endif
+        close(in_gw)
+        !determine the number of tile cells that are linked to each channel
+        allocate(gw_tile_info(sp_ob%chandeg))
+        do i=1,ncell
+          if(gw_state(i)%stat.eq.1 .and. gw_state(i)%tile.eq.1) then
+            channel = cell_channel(i) !channel connected to cell
+            gw_tile_info(channel)%ncon = gw_tile_info(channel)%ncon + 1
+          endif
+        enddo
+        !allocate array for cell information
+        do i=1,sp_ob%chandeg
+          allocate(gw_tile_info(i)%cells(gw_tile_info(i)%ncon))
+          gw_tile_info(i)%ncon = 0
+        enddo
+        !populate the array holding the cell numbers for each channel
+        do i=1,ncell
+          if(gw_state(i)%stat == 1 .and. gw_state(i)%tile == 1) then
+            channel = cell_channel(i) !channel connected to cell
+            gw_tile_info(channel)%ncon = gw_tile_info(channel)%ncon + 1
+            gw_tile_info(channel)%cells(gw_tile_info(channel)%ncon) = i
+          endif
+        enddo
+        !flux output file
+      else
+        write(out_gw,*) '          gwflow.tiles not found; tile drainage not simulated'
+        gw_tile_flag = 0.
+      endif
+      endif !end tile drainage
+
+      !aquifer-reservoir exchange -----------------------------------------------------------------
+      if(gw_res_flag == 1) then
+      inquire(file='rescell.gw',exist=i_exist)
+      if(i_exist) then
+        write(out_gw,*) '          groundwater-reservoir exchange (gwflow.rescells found)'
+        open(in_res_cell,file='rescell.gw')
+        read(in_res_cell,*) header
+        read(in_res_cell,*) header
+        !read in reservoir bed conductivity (m/day) and thickness (m)
+        read(in_res_cell,*) res_thick
+        read(in_res_cell,*) res_K
+        !number of cells that are linked to each reservoir
+        allocate(gw_resv_info(sp_ob%res))
+        !track the number of cells connected with each reservoir
+        read(in_res_cell,*) num_res_cells
+        read(in_res_cell,*) header
+        do i=1,num_res_cells
+          read(in_res_cell,*) res_cell,res_id,res_stage
+          if(res_id > 0) then
+            gw_resv_info(res_id)%ncon = gw_resv_info(res_id)%ncon + 1
+          endif
+        enddo
+        !allocate arrays and re-read information
+        do i=1,sp_ob%res
+          allocate(gw_resv_info(i)%cells(gw_resv_info(i)%ncon))
+          allocate(gw_resv_info(i)%elev(gw_resv_info(i)%ncon))
+          allocate(gw_resv_info(i)%hydc(gw_resv_info(i)%ncon))
+          allocate(gw_resv_info(i)%thck(gw_resv_info(i)%ncon))
+          gw_resv_info(i)%ncon = 0
+        enddo
+        rewind(in_res_cell)
+        read(in_res_cell,*) header
+        read(in_res_cell,*) header
+        read(in_res_cell,*) res_thick
+        read(in_res_cell,*) res_K
+        read(in_res_cell,*) num_res_cells
+        read(in_res_cell,*) header
+        do i=1,num_res_cells
+          read(in_res_cell,*) res_cell,res_id,res_stage
+          if(res_id > 0) then
+            if(grid_type == "structured") then
+              res_cell = cell_id_list(res_cell)
+            endif
+            gw_resv_info(res_id)%ncon = gw_resv_info(res_id)%ncon + 1
+            gw_resv_info(res_id)%cells(gw_resv_info(res_id)%ncon) = res_cell
+            gw_resv_info(res_id)%elev(gw_resv_info(res_id)%ncon) = gw_state(res_cell)%elev
+            gw_resv_info(res_id)%hydc(gw_resv_info(res_id)%ncon) = res_K
+            gw_resv_info(res_id)%thck(gw_resv_info(res_id)%ncon) = res_thick
+          endif
+        enddo
+        !flux output file
+      else
+        write(out_gw,*) '          gwflow.rescells not found (groundwater-res exchange not simulated)'
+      endif
+      endif !end reservoir exchange
+
+      !aquifer-wetland exchange -------------------------------------------------------------------
+      if(gw_wet_flag == 1) then
+        write(out_gw,*) '          groundwater-->wetland exchange'
+        !wetland bed thickness for each wetland object is read in wet_read_hyd; set default value here
+        allocate(wet_thick(sp_ob%hru))
+        wet_thick = 0.25
+        !flux output file
+      endif !end wetland exchange
+
+      !aquifer-floodplain exchange ----------------------------------------------------------------
+      allocate(flood_freq(sp_ob%chandeg))
+      flood_freq = 0
+      if(gw_fp_flag == 1) then
+      inquire(file='floodplain.gw',exist=i_exist)
+      if(i_exist) then
+        write(out_gw,*) '          groundwater-floodplain exchange (gwflow.floodplain found)'
+        open(in_fp_cell,file='floodplain.gw')
+        read(in_fp_cell,*) header
+        read(in_fp_cell,*) gw_fp_ncells !number of floodplain cells
+        !number of cells that are linked to each channel
+        allocate(gw_fpln_info(sp_ob%chandeg))
+        !read in the attributes of each cell (ID, channel of connection, K, area of intersection with floodplain)
+        allocate(gw_fp_cellid(gw_fp_ncells))
+        allocate(gw_fp_chanid(gw_fp_ncells))
+        allocate(gw_fp_K(gw_fp_ncells))
+        allocate(gw_fp_area(gw_fp_ncells))
+        read(in_fp_cell,*) header
+        do i=1,gw_fp_ncells
+          read(in_fp_cell,*) gw_fp_cellid(i),gw_fp_chanid(i),gw_fp_K(i),gw_fp_area(i)
+          if(grid_type == "structured") then
+            gw_fp_cellid(i) = cell_id_list(gw_fp_cellid(i))
+          endif
+          !limit the floodplain area to the size of the cell
+          if(gw_fp_area(i).gt.(gw_state(gw_fp_cellid(i))%area)) then
+            gw_fp_area(i) = gw_state(gw_fp_cellid(i))%area
+          endif
+          !track the number of cells for each channel
+          channel = gw_fp_chanid(i) !channel connected to cell
+          gw_fpln_info(channel)%ncon = gw_fpln_info(channel)%ncon + 1
+        enddo
+        !allocate arrays holding the cell information
+        do i=1,sp_ob%chandeg
+          allocate(gw_fpln_info(i)%cells(gw_fpln_info(i)%ncon))
+          allocate(gw_fpln_info(i)%hydc(gw_fpln_info(i)%ncon))
+          allocate(gw_fpln_info(i)%area(gw_fpln_info(i)%ncon))
+          allocate(gw_fpln_info(i)%mtch(gw_fpln_info(i)%ncon))
+          gw_fpln_info(i)%ncon = 0
+        enddo
+        !populate the array holding the cell numbers for each channel
+        do i=1,gw_fp_ncells
+          channel = gw_fp_chanid(i) !channel connected to cell
+          gw_fpln_info(channel)%ncon = gw_fpln_info(channel)%ncon + 1
+          gw_fpln_info(channel)%cells(gw_fpln_info(channel)%ncon) = gw_fp_cellid(i)
+          gw_fpln_info(channel)%hydc(gw_fpln_info(channel)%ncon) = gw_fp_K(i)
+          gw_fpln_info(channel)%area(gw_fpln_info(channel)%ncon) = gw_fp_area(i)
+          gw_fpln_info(channel)%mtch(gw_fpln_info(channel)%ncon) = 0
+          do k=1,sp_ob%gwflow !loop through channel cells - see if there is a match
+            if(gw_fp_cellid(i) == gw_chan_id(k)) then
+              gw_fpln_info(channel)%mtch(gw_fpln_info(channel)%ncon) = k
+            endif
+          enddo
+        enddo
+        !flux output file
+      else
+        write(out_gw,*) '          gwflow.floodplain not found (groundwater-fp exchange not simulated)'
+        gw_fp_flag = 0
+      endif
+      endif !end floodplain exchange
+
+
+      !groundwater seepage from canals ------------------------------------------------------------
+      !canal properties come from canal() array (read by water_canal_read from water_canal.wal)
+      !cell connections come from gwflow_canal.con
+      if(gw_canal_flag == 1) then
+      inquire(file='gwflow_canal.con',exist=i_exist)
+      if(i_exist) then
+        write(out_gw,*) '          canal-->groundwater seepage (gwflow_canal.con found)'
+
+        !get number of canals from the canal database
+        gw_ncanal = db_mx%canal
+
+        !classify each canal and populate property arrays from canal()
+        allocate(gw_chan_canl_info(sp_ob%chandeg))
+        allocate(gw_canl_div_info(gw_ncanal))
+        allocate(canal_out_info(gw_ncanal,6))
+        allocate(canal_out(gw_ncanal))
+        allocate(canal_div(gw_ncanal))
+        canal_out_info = 0.
+        canal_div = 0
+        canal_out = 0
+        do ic=1,gw_ncanal
+          if(canal(ic)%div_id > 0) then
+            !canal water from point source diversion
+            canal_div(ic) = 1
+            gw_canl_div_info(ic)%canal_id = ic
+            gw_canl_div_info(ic)%divr = canal(ic)%div_id
+            gw_canl_div_info(ic)%width = canal(ic)%w
+            gw_canl_div_info(ic)%depth = canal(ic)%d
+            gw_canl_div_info(ic)%thick = canal(ic)%bed_thick
+            gw_canl_div_info(ic)%bed_K = canal(ic)%sat_con
+          elseif(canal(ic)%div_id == 0 .and. canal(ic)%day_beg > 0) then
+            !canal water originates from outside the model domain
+            canal_out(ic) = 1
+            canal_out_info(ic,1) = canal(ic)%w
+            canal_out_info(ic,2) = canal(ic)%d
+            canal_out_info(ic,3) = canal(ic)%bed_thick
+            canal_out_info(ic,4) = real(canal(ic)%day_beg)
+            canal_out_info(ic,5) = real(canal(ic)%day_end)
+            canal_out_info(ic,6) = canal(ic)%sat_con
+          endif
+        enddo
+
+        !--- read gwflow_canal.con for cell connections ---
+        open(in_canal_cell,file='gwflow_canal.con')
+        read(in_canal_cell,*) header  !file title line
+
+        !first pass: count cells per canal, and totals for div/out/channel categories
+        gw_canal_ncells_div = 0
+        gw_canal_ncells_out = 0
+        allocate(gw_canl_info(gw_ncanal))
+        do
+          read(in_canal_cell,*,iostat=eof) canal_id, obj_tot
+          if(eof /= 0) exit
+          !classify by canal type and accumulate cell counts
+          if(canal_div(canal_id) == 1) then
+            gw_canal_ncells_div = gw_canal_ncells_div + obj_tot
+          elseif(canal_out(canal_id) == 1) then
+            gw_canal_ncells_out = gw_canal_ncells_out + obj_tot
+          else
+            gw_canl_info(canal_id)%ncon = obj_tot
+          endif
+        enddo
+
+        !allocate cell arrays for channel-connected canals
+        do ic=1,gw_ncanal
+          allocate(gw_canl_info(ic)%cells(gw_canl_info(ic)%ncon))
+          allocate(gw_canl_info(ic)%leng(gw_canl_info(ic)%ncon))
+          allocate(gw_canl_info(ic)%elev(gw_canl_info(ic)%ncon))
+          allocate(gw_canl_info(ic)%hydc(gw_canl_info(ic)%ncon))
+          gw_canl_info(ic)%ncon = 0  !reset counter for second pass
+        enddo
+        allocate(gw_canl_div_cell(gw_canal_ncells_div))
+        allocate(gw_canl_out_info(gw_canal_ncells_out))
+
+        !count channel-connected canals per channel (for gw_chan_canl_info allocation)
+        do ic=1,gw_ncanal
+          if(canal_div(ic) == 0 .and. canal_out(ic) == 0) then
+            !this is a channel-connected canal -- need to find its channel
+            !channel association will be set when wallo routes water; here just track the canal
+          endif
+        enddo
+        !allocate channel-canal arrays (channels that have canals are populated by wallo routing)
+        do i=1,sp_ob%chandeg
+          allocate(gw_chan_canl_info(i)%canals(0))
+          allocate(gw_chan_canl_info(i)%wdth(0))
+          allocate(gw_chan_canl_info(i)%dpth(0))
+          allocate(gw_chan_canl_info(i)%thck(0))
+          allocate(gw_chan_canl_info(i)%hydc(0))
+          allocate(gw_chan_canl_info(i)%dayb(0))
+          allocate(gw_chan_canl_info(i)%daye(0))
+        enddo
+
+        !second pass: read cell connections and populate arrays
+        rewind(in_canal_cell)
+        read(in_canal_cell,*) header  !file title line
+        gw_canal_ncells_div = 0
+        gw_canal_ncells_out = 0
+        gw_canal_ncells = 0
+        do
+          read(in_canal_cell,*,iostat=eof) canal_id, obj_tot
+          if(eof /= 0) exit
+          backspace(in_canal_cell)
+          !allocate temporary buffer to hold the row data
+          allocate(con_row_buf(obj_tot*3))
+          read(in_canal_cell,*) canal_id, obj_tot, (con_row_buf(j),j=1,obj_tot*3)
+          !process each cell group
+          do j=1,obj_tot
+            cell_num = int(con_row_buf((j-1)*3 + 1))
+            length   = con_row_buf((j-1)*3 + 2)
+            stage    = con_row_buf((j-1)*3 + 3)
+            if(grid_type == "structured") then
+              cell_num = cell_id_list(cell_num)
+            endif
+            gw_canal_ncells = gw_canal_ncells + 1
+            if(cell_num > 0) then
+              if(canal_div(canal_id) == 1) then
+                !diversion canal cell
+                gw_canal_ncells_div = gw_canal_ncells_div + 1
+                gw_canl_div_cell(gw_canal_ncells_div)%cell_id = cell_num
+                gw_canl_div_cell(gw_canal_ncells_div)%canal_id = canal_id
+                gw_canl_div_cell(gw_canal_ncells_div)%leng = length
+                gw_canl_div_cell(gw_canal_ncells_div)%elev = stage
+              elseif(canal_out(canal_id) == 1) then
+                !outside-source canal cell
+                gw_canal_ncells_out = gw_canal_ncells_out + 1
+                gw_canl_out_info(gw_canal_ncells_out)%cell_id = cell_num
+                gw_canl_out_info(gw_canal_ncells_out)%wdth = canal_out_info(canal_id,1)
+                gw_canl_out_info(gw_canal_ncells_out)%dpth = canal_out_info(canal_id,2)
+                gw_canl_out_info(gw_canal_ncells_out)%thck = canal_out_info(canal_id,3)
+                gw_canl_out_info(gw_canal_ncells_out)%leng = length
+                gw_canl_out_info(gw_canal_ncells_out)%elev = stage
+                gw_canl_out_info(gw_canal_ncells_out)%hydc = canal_out_info(canal_id,6)
+                gw_canl_out_info(gw_canal_ncells_out)%dayb = int(canal_out_info(canal_id,4))
+                gw_canl_out_info(gw_canal_ncells_out)%daye = int(canal_out_info(canal_id,5))
+              else
+                !channel-connected canal cell
+                gw_canl_info(canal_id)%ncon = gw_canl_info(canal_id)%ncon + 1
+                gw_canl_info(canal_id)%cells(gw_canl_info(canal_id)%ncon) = cell_num
+                gw_canl_info(canal_id)%leng(gw_canl_info(canal_id)%ncon) = length
+                gw_canl_info(canal_id)%elev(gw_canl_info(canal_id)%ncon) = stage
+                gw_canl_info(canal_id)%hydc(gw_canl_info(canal_id)%ncon) = canal(canal_id)%sat_con
+              endif
+            endif
+          enddo
+          deallocate(con_row_buf)
+        enddo
+        close(in_canal_cell)
+
+        !flux output file
+        if(gwflag_flux == 1) then
+        !canal water balance file (daily)
+        open(out_canal_bal,file='gwflow_canal_wb_day.txt')
+        write(out_canal_bal,*) 'gwflow canal daily water balance (m3)'
+        write(out_canal_bal,8000) 'jday','mon','day','yr','unit','gis_id', &
+          'name','diversion','storage','pond_xfer','seepage'
+        write(out_canal_bal,8000) '','','','','','','', &
+          'm3','m3','m3','m3'
+        !canal solute mass balance file (daily)
+        open(out_canal_sol,file='gwflow_canal_sol_day.txt')
+        write(out_canal_sol,*) 'gwflow canal daily solute mass balance (kg)'
+        write(out_canal_sol,'(4a6,2a8,a18,a13,4a13)') &
+          'jday','mon','day','yr','unit','gis_id', &
+          'name','solute','div_mass','storage','pond_mass', &
+          'seep_mass'
+        write(out_canal_sol,'(4a6,2a8,a18,a13,4a13)') &
+          '','','','','','','','', &
+          'kg','kg','kg','kg'
+        endif !gwflag_flux
+      else
+        write(out_gw,*) '          gwflow_canal.con not found (canal seepage not simulated)'
+      endif
+      endif !end canal seepage
+
+
+      !phreatophyte transpiration ---------------------------------------------------------------------------
+      !two flat files: phreato.gw = depth-ET curve (depth et_rate, read to EOF);
+      !phreato_cell.gw = cells with phreatophytes (cell_id area, read to EOF)
+      gw_phyt_flag = 0
+      inquire(file='phreato.gw',exist=i_exist)
+      if(i_exist) then
+        gw_phyt_flag = 1
+        !depth-ET curve
+        open(in_gw,file='phreato.gw')
+        read(in_gw,*) header                        !meta line
+        read(in_gw,*) header                        !column header
+        gw_phyt_npts = 0
+        do
+          read(in_gw,*,iostat=eof) single_value
+          if(eof /= 0) exit
+          gw_phyt_npts = gw_phyt_npts + 1
+        enddo
+        allocate(gw_phyt_dep(gw_phyt_npts))
+        allocate(gw_phyt_rate(gw_phyt_npts))
+        rewind(in_gw)
+        read(in_gw,*) header
+        read(in_gw,*) header
+        do i=1,gw_phyt_npts
+          read(in_gw,*) gw_phyt_dep(i),gw_phyt_rate(i)
+        enddo
+        close(in_gw)
+        !cells with phreatophytes
+        open(in_gw,file='phreato_cell.gw')
+        read(in_gw,*) header                        !meta line
+        read(in_gw,*) header                        !column header
+        gw_phyt_ncells = 0
+        do
+          read(in_gw,*,iostat=eof) cell_id
+          if(eof /= 0) exit
+          gw_phyt_ncells = gw_phyt_ncells + 1
+        enddo
+        allocate(gw_phyt_ids(gw_phyt_ncells))
+        allocate(gw_phyt_area(gw_phyt_ncells))
+        rewind(in_gw)
+        read(in_gw,*) header
+        read(in_gw,*) header
+        do i=1,gw_phyt_ncells
+          read(in_gw,*) gw_phyt_ids(i),gw_phyt_area(i)
+          if(grid_type == "structured") then
+            gw_phyt_ids(i) = cell_id_list(gw_phyt_ids(i))
+          endif
+        enddo
+        close(in_gw)
+      endif
+
+      !time-varying boundary conditions ---------------------------------------------------------------------
+      gw_tvh_flag = 0
+      inquire(file='tvheads.gw',exist=i_exist)
+      if(i_exist) then
+        gw_tvh_flag = 1
+        open(in_tvh,file='tvheads.gw')
+        read(in_tvh,*) header                         !meta line
+        read(in_tvh,*) header                         !column header
+        !flat format: count data rows to EOF (one row per cell: cell_id + head per sim year)
+        gw_ntvh = 0
+        do
+          read(in_tvh,*,iostat=eof) cell_id
+          if(eof /= 0) exit
+          gw_ntvh = gw_ntvh + 1
+        enddo
+        allocate(gw_tvh_ids(gw_ntvh))
+        allocate(gw_tvh_vals(gw_ntvh,time%nbyr))
+        rewind(in_tvh)
+        read(in_tvh,*) header
+        read(in_tvh,*) header
+        do i=1,gw_ntvh
+          read(in_tvh,*) cell_id,(gw_tvh_vals(i,j),j=1,time%nbyr)
+          if(grid_type == "structured") then
+            gw_tvh_ids(i) = cell_id_list(cell_id)
+          else
+            gw_tvh_ids(i) = cell_id
+          endif
+        enddo
+      endif
+
+
+      !groundwater heat transport: Kt from gwflow.zones, initial temp from gwflow.cells (no gwflow.heat)
+      if(gw_heat_flag == 1) then
+        allocate(gwheat_state(ncell))
+        do i=1,ncell
+          gwheat_state(i)%thmc = zones_Kt(gw_state(i)%zone)
+          gwheat_state(i)%temp = cell_init_temp(i)
+        enddo
+
+        !allocate cell source/sink arrays
+        allocate(gw_heat_ss(ncell))
+        do i=1,ncell
+          gw_heat_ss(i)%rech = 0.
+          gw_heat_ss(i)%gwet = 0.
+          gw_heat_ss(i)%gwsw = 0.
+          gw_heat_ss(i)%swgw = 0.
+          gw_heat_ss(i)%satx = 0.
+          gw_heat_ss(i)%soil = 0.
+          gw_heat_ss(i)%latl = 0.
+          gw_heat_ss(i)%disp = 0.
+          gw_heat_ss(i)%bndr = 0.
+          gw_heat_ss(i)%ppag = 0.
+          gw_heat_ss(i)%ppex = 0.
+          gw_heat_ss(i)%tile = 0.
+          gw_heat_ss(i)%resv = 0.
+          gw_heat_ss(i)%wetl = 0.
+          gw_heat_ss(i)%fpln = 0.
+          gw_heat_ss(i)%canl = 0.
+          gw_heat_ss(i)%totl = 0.
+        enddo
+
+        !allocate grid source/sink arrays
+        !annual
+        allocate(gw_heat_ss_yr(ncell))
+        do i=1,ncell
+          gw_heat_ss_yr(i)%rech = 0.
+          gw_heat_ss_yr(i)%gwet = 0.
+          gw_heat_ss_yr(i)%gwsw = 0.
+          gw_heat_ss_yr(i)%swgw = 0.
+          gw_heat_ss_yr(i)%satx = 0.
+          gw_heat_ss_yr(i)%soil = 0.
+          gw_heat_ss_yr(i)%latl = 0.
+          gw_heat_ss_yr(i)%disp = 0.
+          gw_heat_ss_yr(i)%bndr = 0.
+          gw_heat_ss_yr(i)%ppag = 0.
+          gw_heat_ss_yr(i)%ppex = 0.
+          gw_heat_ss_yr(i)%tile = 0.
+          gw_heat_ss_yr(i)%resv = 0.
+          gw_heat_ss_yr(i)%wetl = 0.
+          gw_heat_ss_yr(i)%fpln = 0.
+          gw_heat_ss_yr(i)%canl = 0.
+        enddo
+
+        !temperature at observation cells
+        allocate(gw_obs_temp(gw_num_obs_wells))
+        gw_obs_temp = 0.
+        allocate(gw_obs_temp_aa(gw_num_obs_wells))
+        gw_obs_temp_aa = 0.
+        !open output files for each source/sink type
+        !recharge
+        allocate(gw_rechheat(sp_ob%hru))
+        gw_rechheat = 0.
+        !groundwater ET
+        !groundwater-channel exchange
+        !ground-->soil transfer
+        if(gw_soil_flag.eq.1) then
+        endif
+        !saturation excess flow
+        if(gw_satx_flag.eq.1) then
+        endif
+        !irrigation pumping
+        !specified pumping
+        if(gw_pumpex_flag == 1) then
+        endif
+        !tile drainage
+        if(gw_tile_flag == 1) then
+        endif
+        !reservoir
+        if(gw_res_flag == 1) then
+        endif
+        !wetland exchange
+        if(gw_wet_flag == 1) then
+        endif
+        !floodplain exchange
+        if(gw_fp_flag == 1) then
+        endif
+        !canal seepage
+        if(gw_canal_flag == 1) then
+        endif
+        allocate(heat_cell(ncell))
+        heat_cell = 0.
+
+      endif
+
+
+
+      !groundwater solute transport option ------------------------------------------------------------------
+      write(out_gw,*)
+
+      gw_nsolute = 0
+      if(gw_solute_flag == 1) then
+      inquire(file='solute.gw',exist=i_exist)
+      if(i_exist) then
+
+        !open the file
+        open(in_gw,file='solute.gw')
+
+        !pre-compute total solute count and allocate arrays
+        gw_nsolute = 2 !no3 + p always
+        inquire(file="constituents.cs", exist=i_exist2)
+        if(i_exist2) then
+          if(cs_db%num_salts > 0) gw_nsolute = gw_nsolute + cs_db%num_salts
+          if(cs_db%num_cs > 0) gw_nsolute = gw_nsolute + cs_db%num_cs
+        endif
+        allocate(gwsol_nm(gw_nsolute))
+        gwsol_nm = ""
+        allocate(gwsol_rctn(gw_nsolute), source=0.)
+        allocate(gwsol_sorb(gw_nsolute), source=0.)
+        allocate(mass_rct(gw_nsolute), source=0.)
+        allocate(mass_min(gw_nsolute), source=0.)
+
+        !include no3 and p (default); reset counter for incremental fill
+        gw_nsolute = 2
+        gwsol_nm(1) = 'no3'
+        gwsol_nm(2) = 'p'
+
+        !determine which other solutes should be included
+        inquire(file="constituents.cs", exist=i_exist2)
+        if(i_exist2) then
+          if(cs_db%num_salts > 0) then
+            gwsol_salt = 1
+            do i=1,cs_db%num_salts
+              gw_nsolute = gw_nsolute + 1
+              gwsol_nm(gw_nsolute) = cs_db%salts(i)
+            enddo
+          else
+            gwsol_salt = 0
+          endif
+          !other constituents
+          if(cs_db%num_cs > 0) then
+            gwsol_cons = 1
+            do i=1,cs_db%num_cs
+              gw_nsolute = gw_nsolute + 1
+              gwsol_nm(gw_nsolute) = cs_db%cs(i)
+            enddo
+          else
+            gwsol_cons = 0
+          endif
+        else !no constituents specified; only simulate no3 and p
+          gwsol_salt = 0
+          gwsol_cons = 0
+        endif
+
+        !reading gwflow.solutes file
+        write(out_gw,*) '     groundwater solute transport preparation...'
+        write(out_gw,*) '          groundwater solute being simulated (gwflow.solutes found)'
+        !general parameters
+        read(in_gw,*) header
+        read(in_gw,*) header
+        read(in_gw,*) num_ts_transport
+        read(in_gw,*) gw_long_disp
+        !read in solute parameters
+        allocate(canal_out_conc(gw_nsolute))
+        canal_out_conc = 0.
+        !temporary diversion concentration arrays (to be replaced by wallo transfer in Phase 7)
+        allocate(div_conc_salt(cs_db%num_salts,sp_ob%recall), source = 0.)
+        allocate(div_conc_cs(cs_db%num_cs,sp_ob%recall), source = 0.)
+        read(in_gw,*) header
+        do s=1,gw_nsolute
+          read(in_gw,*) name,gwsol_sorb(s),gwsol_rctn(s),canal_out_conc(s)
+        enddo
+        !allocate state array
+        allocate(gwsol_state(ncell))
+        do i=1,ncell
+          allocate(gwsol_state(i)%solute(gw_nsolute))
+        enddo
+        close(in_gw)
+        !initial per-cell solute concentrations from cell_sol.gw: cell_id conc_1..conc_nsolute (read to EOF)
+        inquire(file='cell_sol.gw',exist=i_exist)
+        if(i_exist) then
+          open(in_gw,file='cell_sol.gw')
+          read(in_gw,*) header                        !meta line
+          read(in_gw,*) header                        !column header
+          do i=1,ncell
+            read(in_gw,*) cell_id,(gwsol_state(i)%solute(s)%conc,s=1,gw_nsolute)
+          enddo
+          close(in_gw)
+        endif
+        !if salts active: read in salt mineral data (if provided)
+        if(gwsol_salt == 1) then
+          inquire(file='minerals.gw',exist=i_exist)
+          if(i_exist) then
+            gwsol_minl = 1
+            open(in_gw_minl,file='minerals.gw')
+            read(in_gw_minl,*) header
+            read(in_gw_minl,*) gw_nminl
+            !allocate arrays based on number of salt minerals
+            allocate(gwsol_minl_state(ncell))
+            do i=1,ncell
+              allocate(gwsol_minl_state(i)%fract(gw_nminl))
+            enddo
+            !read in initial salt minerals fractions
+            read(in_gw_minl,*) header
+            if(grid_type == "structured") then
+            !read one mineral at a time
+            do m=1,gw_nminl
+              read(in_gw_minl,*) header
+              read(in_gw_minl,*) read_type
+              if(read_type == "single") then
+                read(in_gw_minl,*) single_value
+                grid_val = single_value
+              elseif(read_type == "array") then
+                do i=1,grid_nrow
+                  read(in_gw_minl,*) (grid_val(i,j),j=1,grid_ncol)
+                enddo
+              endif
+            enddo
+          elseif(grid_type == "unstructured") then
+            !read one cell at a time (solutes across columns)
+            do i=1,ncell
+              read(in_gw_minl,*) (gwsol_minl_state(i)%fract(m),m=1,gw_nminl)
+            enddo
+          endif
+          endif
+        endif
+        !if constituents active: read in reaction group and shale fractions
+        if(gwsol_cons == 1) then
+          !allocate solute chem array
+          allocate(gwsol_chem(ncell))
+          do i=1,ncell
+            gwsol_chem(i)%ino3 = 0.
+            gwsol_chem(i)%oxyg = 0.
+            gwsol_chem(i)%kd_seo4 = 0.
+            gwsol_chem(i)%kd_seo3 = 0.
+            gwsol_chem(i)%kd_boron = 0.
+            gwsol_chem(i)%kseo4 = 0.
+            gwsol_chem(i)%bed_o2a= 0.
+            gwsol_chem(i)%bed_no3a = 0.
+          enddo
+          !read reaction group for each cell; use to assign chem values to cells
+          read(in_gw,*)
+          if(grid_type == "unstructured") then
+            allocate(cell_int(ncell))
+            read(in_gw,*) (cell_int(i),i=1,ncell)
+            do i=1,ncell
+              gwsol_chem(i)%ino3 = rct(1,cell_int(i)) !inhibition term
+              gwsol_chem(i)%oxyg = rct(3,cell_int(i)) !o2 concentration in groundwater
+              gwsol_chem(i)%kd_seo4 = rct(4,cell_int(i)) !seo4 sorption coefficient
+              gwsol_chem(i)%kd_seo3 = rct(5,cell_int(i)) !seo3 sorption coefficient
+              gwsol_chem(i)%kd_boron = rct(6,cell_int(i)) !boron sorption coefficient
+              gwsol_chem(i)%kseo4 = rct(8,cell_int(i)) !seo4 microbial reduction rate constant
+              gwsol_chem(i)%kseo3 = rct(10,cell_int(i)) !seo3 microbial reduction rate constant
+            enddo
+          elseif(grid_type == "structured") then
+            do i=1,grid_nrow
+              read(in_gw,*) (grid_int(i,j),j=1,grid_ncol)
+            enddo
+            do i=1,grid_nrow
+              do j=1,grid_ncol
+                if(cell_id_usg(i,j) > 0) then
+                  gwsol_chem(cell_id_usg(i,j))%ino3 = rct(1,grid_int(i,j)) !inhibition term
+                  gwsol_chem(cell_id_usg(i,j))%oxyg = rct(3,grid_int(i,j)) !o2 concentration in groundwater
+                  gwsol_chem(cell_id_usg(i,j))%kd_seo4 = rct(4,grid_int(i,j)) !seo4 sorption coefficient
+                  gwsol_chem(cell_id_usg(i,j))%kd_seo3 = rct(5,grid_int(i,j)) !seo3 sorption coefficient
+                  gwsol_chem(cell_id_usg(i,j))%kd_boron = rct(6,grid_int(i,j)) !boron sorption coefficient
+                  gwsol_chem(cell_id_usg(i,j))%kseo4 = rct(8,grid_int(i,j)) !seo4 microbial reduction rate constant
+                  gwsol_chem(cell_id_usg(i,j))%kseo3 = rct(10,grid_int(i,j)) !seo4 microbial reduction rate constant
+                endif
+              enddo
+            enddo
+          endif
+          !read number of shale groups, and shale value (0 or 1) for each cell
+          do i=1,ncell
+            gwsol_chem(i)%nshale = num_geol_shale
+            allocate(gwsol_chem(i)%shale(num_geol_shale))
+            allocate(gwsol_chem(i)%shale_sseratio(num_geol_shale))
+            allocate(gwsol_chem(i)%shale_o2a(num_geol_shale))
+            allocate(gwsol_chem(i)%shale_no3a(num_geol_shale))
+          enddo
+          do n=1,num_geol_shale
+            read(in_gw,*) header
+            if(grid_type == "unstructured") then
+              read(in_gw,*) (cell_int(i),i=1,ncell)
+              do i=1,ncell
+                if(cell_int(i) > 0) then !shale is present in the cell
+                  gwsol_chem(i)%shale(n) = 1
+                  gwsol_chem(i)%shale_sseratio(n) = rct_shale(n,1)
+                  gwsol_chem(i)%shale_o2a(n) = rct_shale(n,2)
+                  gwsol_chem(i)%shale_no3a(n) = rct_shale(n,3)
+                else
+                  gwsol_chem(i)%shale(n) = 0
+                  gwsol_chem(i)%shale_sseratio(n) = 0.
+                  gwsol_chem(i)%shale_o2a(n) = 0.
+                  gwsol_chem(i)%shale_no3a(n) = 0.
+                endif
+              enddo
+            elseif(grid_type == "structured") then
+              do i=1,grid_nrow
+                read(in_gw,*) (grid_int(i,j),j=1,grid_ncol)
+              enddo
+              do i=1,grid_nrow
+                do j=1,grid_ncol
+                  if(cell_id_usg(i,j) > 0) then
+                    if(grid_int(i,j) > 0) then !shale is present in the cell
+                      gwsol_chem(cell_id_usg(i,j))%shale(n) = 1
+                      gwsol_chem(cell_id_usg(i,j))%shale_sseratio(n) = rct_shale(n,1)
+                      gwsol_chem(cell_id_usg(i,j))%shale_o2a(n) = rct_shale(n,2)
+                      gwsol_chem(cell_id_usg(i,j))%shale_no3a(n) = rct_shale(n,3)
+                    else
+                      gwsol_chem(cell_id_usg(i,j))%shale(n) = 0
+                      gwsol_chem(cell_id_usg(i,j))%shale_sseratio(n) = 0.
+                      gwsol_chem(cell_id_usg(i,j))%shale_o2a(n) = 0.
+                      gwsol_chem(cell_id_usg(i,j))%shale_no3a(n) = 0.
+                    endif
+                  endif
+                enddo
+              enddo
+            endif
+          enddo !go to next shale formation
+          !read in shale ID for bedrock material underlying the unconfined aquifer
+          read(in_gw,*) header
+          if(grid_type == "unstructured") then
+            read(in_gw,*) (cell_int(i),i=1,ncell)
+            do i=1,ncell
+              if(cell_int(i) > 0) then !shale is present in the cell
+                gwsol_chem(i)%bed_flag = 1
+                gwsol_chem(i)%bed_sse = rct_shale(cell_int(i),1)
+                gwsol_chem(i)%bed_o2a = rct_shale(cell_int(i),2)
+                gwsol_chem(i)%bed_no3a = rct_shale(cell_int(i),3)
+              else
+                gwsol_chem(i)%bed_flag = 0
+                gwsol_chem(i)%bed_sse = 0.
+                gwsol_chem(i)%bed_o2a = 0.
+                gwsol_chem(i)%bed_no3a = 0.
+              endif
+            enddo
+          elseif(grid_type == "structured") then
+            do i=1,grid_nrow
+              read(in_gw,*) (grid_int(i,j),j=1,grid_ncol)
+            enddo
+            do i=1,grid_nrow
+              do j=1,grid_ncol
+                if(cell_id_usg(i,j) > 0) then
+                  if(grid_int(i,j) > 0) then !shale is present in the cell
+                    gwsol_chem(cell_id_usg(i,j))%bed_flag = 1
+                    gwsol_chem(cell_id_usg(i,j))%bed_sse = rct_shale(grid_int(i,j),1)
+                    gwsol_chem(cell_id_usg(i,j))%bed_o2a = rct_shale(grid_int(i,j),2)
+                    gwsol_chem(cell_id_usg(i,j))%bed_no3a = rct_shale(grid_int(i,j),3)
+                  else
+                    gwsol_chem(cell_id_usg(i,j))%bed_flag = 0
+                    gwsol_chem(cell_id_usg(i,j))%bed_sse = 0.
+                    gwsol_chem(cell_id_usg(i,j))%bed_o2a = 0.
+                    gwsol_chem(cell_id_usg(i,j))%bed_no3a = 0.
+                  endif
+                endif
+              enddo
+            enddo
+          endif
+        endif !if constituents are active
+        close(in_gw) !close the file
+        !copy to initial concentrations
+        do i=1,ncell
+          do s=1,gw_nsolute !loop through the solutes
+            gwsol_state(i)%solute(s)%init = gwsol_state(i)%solute(s)%conc
+          enddo
+        enddo
+        !allocate all mass arrays for sources and sinks
+        allocate(gwsol_ss(ncell))
+        do i=1,ncell
+          allocate(gwsol_ss(i)%solute(gw_nsolute))
+        enddo
+        !allocate all mass arrays for sums of sources and sinks
+        allocate(gwsol_ss_sum(ncell))
+        allocate(gwsol_ss_sum_mo(ncell))
+        do i=1,ncell
+          allocate(gwsol_ss_sum(i)%solute(gw_nsolute))
+          allocate(gwsol_ss_sum_mo(i)%solute(gw_nsolute))
+        enddo
+        !open output files for each source/sink type
+        !recharge
+        allocate(gw_rechsol(sp_ob%hru,gw_nsolute))
+        allocate(gwflow_percsol(sp_ob%hru,gw_nsolute))
+        gw_rechsol = 0.
+        gwflow_percsol = 0.
+        !groundwater-channel exchange
+        !ground-->soil transfer
+        if(gw_soil_flag.eq.1) then
+        endif
+        allocate(hru_soil(sp_ob%hru,20,gw_nsolute))
+        hru_soil = 0.
+        !saturation excess flow
+        if(gw_satx_flag.eq.1) then
+        endif
+        !irrigation pumping
+        !specified pumping
+        if(gw_pumpex_flag == 1) then
+        endif
+        !tile drainage
+        if(gw_tile_flag == 1) then
+        endif
+        !reservoir
+        if(gw_res_flag == 1) then
+        endif
+        !wetland exchange
+        if(gw_wet_flag == 1) then
+        endif
+        !floodplain exchange
+        if(gw_fp_flag == 1) then
+        endif
+        !canal seepage
+        if(gw_canal_flag == 1) then
+        endif
+        !chemical reactions (inputs and outputs)
+        if(gw_solute_flag == 1) then !solute mass flux
+        endif
+        allocate(gw_obs_solute(gw_num_obs_wells,gw_nsolute))
+        allocate(gw_obs_sol_aa(gw_num_obs_wells,gw_nsolute))
+        gw_obs_sol_aa = 0.
+        gw_obs_solute = 0.
+      else
+        gw_solute_flag = 0 !turn off transport option
+      endif
+      endif !end solute transport
+
+
+      !recharge pond seepage ----------------------------------------------------------------------
+      !(do this here, because depends on the number of groundwater solutes)
+      gw_pond_flag = 0
+      inquire(file='ponds.gw',exist=i_exist)
+      if(i_exist) then
+        gw_pond_flag = 1
+        !number of days in each month
+        month_days(1) = 31
+        month_days(2) = 28
+        month_days(3) = 31
+        month_days(4) = 30
+        month_days(5) = 31
+        month_days(6) = 30
+        month_days(7) = 31
+        month_days(8) = 31
+        month_days(9) = 30
+        month_days(10) = 31
+        month_days(11) = 30
+        month_days(12) = 31
+        !ponds.gw (params, flat read-to-EOF; no ncell column -- derived from pond_cell.gw)
+        open(in_ponds,file='ponds.gw')
+        read(in_ponds,*) header                     !meta line
+        read(in_ponds,*) header                     !column header
+        gw_npond = 0
+        do
+          read(in_ponds,*,iostat=eof) dum_id
+          if(eof /= 0) exit
+          gw_npond = gw_npond + 1
+        enddo
+        allocate(gw_pond_info(gw_npond))
+        rewind(in_ponds)
+        read(in_ponds,*) header
+        read(in_ponds,*) header
+        do i=1,gw_npond
+          allocate(gw_pond_info(i)%unl_conc(gw_nsolute))
+          read(in_ponds,*) gw_pond_info(i)%id, &
+                           gw_pond_info(i)%area, &
+                           gw_pond_info(i)%chan, &
+                           gw_pond_info(i)%canal, &
+                           gw_pond_info(i)%unl, &
+                           gw_pond_info(i)%bed_k, &
+                           gw_pond_info(i)%wsta, &
+                           gw_pond_info(i)%evap_co, &
+                           yr_start,mo_start,dy_start, &
+                           (gw_pond_info(i)%unl_conc(j),j=1,gw_nsolute)
+          !determine starting day for each recharge pond
+          if(yr_start < time%yrc) then
+            num_dy = 1
+          else
+            num_dy = (yr_start-time%yrc) * 365
+            do j=1,mo_start-1
+              num_dy = num_dy + month_days(j)
+            enddo
+            num_dy = num_dy + dy_start
+          endif
+          gw_pond_info(i)%dy_start = num_dy
+          gw_pond_info(i)%ncell = 0
+          allocate(gw_pond_info(i)%sol_mass(gw_nsolute))
+          allocate(gw_pond_info(i)%sol_conc(gw_nsolute))
+          do j=1,gw_nsolute
+            gw_pond_info(i)%sol_mass(j) = 0.
+            gw_pond_info(i)%sol_conc(j) = 0.
+          enddo
+        enddo
+        close(in_ponds)
+        !pond_cell.gw (pond->cell connections, flat read-to-EOF): pond_id cell_id conn_area.
+        !first pass: count connections per pond (ncell), then allocate, then fill.
+        open(in_ponds,file='pond_cell.gw')
+        read(in_ponds,*) header
+        read(in_ponds,*) header
+        do
+          read(in_ponds,*,iostat=eof) dum_id
+          if(eof /= 0) exit
+          do i=1,gw_npond
+            if(gw_pond_info(i)%id == dum_id) gw_pond_info(i)%ncell = gw_pond_info(i)%ncell + 1
+          enddo
+        enddo
+        do i=1,gw_npond
+          allocate(gw_pond_info(i)%cells(gw_pond_info(i)%ncell))
+          allocate(gw_pond_info(i)%conn_area(gw_pond_info(i)%ncell))
+          gw_pond_info(i)%ncell = 0
+        enddo
+        rewind(in_ponds)
+        read(in_ponds,*) header
+        read(in_ponds,*) header
+        do
+          read(in_ponds,*,iostat=eof) dum_id,cell_num,dum4
+          if(eof /= 0) exit
+          if(grid_type == "structured") cell_num = cell_id_list(cell_num)
+          do i=1,gw_npond
+            if(gw_pond_info(i)%id == dum_id) then
+              gw_pond_info(i)%ncell = gw_pond_info(i)%ncell + 1
+              gw_pond_info(i)%cells(gw_pond_info(i)%ncell) = cell_num
+              gw_pond_info(i)%conn_area(gw_pond_info(i)%ncell) = dum4
+            endif
+          enddo
+        enddo
+        close(in_ponds)
+        !daily diverted volumes (m3) per pond: pond_div.gw (one row per sim day: year month day div_1..div_npond)
+        !kept open on unit in_ponds; gwflow_pond reads one row per timestep. skip 2 preamble lines here.
+        gw_pond_div_flag = 0
+        inquire(file='pond_div.gw',exist=i_exist)
+        if(i_exist) then
+          gw_pond_div_flag = 1
+          open(in_ponds,file='pond_div.gw')
+          read(in_ponds,*) header                     !meta line
+          read(in_ponds,*) header                     !column header
+        endif
+        !flux output file
+        if(gwflag_flux == 1) then
+        !pond water balance file
+        open(out_pond_bal,file='gwflow_pond_wb_day.txt')
+        write(out_pond_bal,*) 'gwflow recharge pond daily water balance'
+        write(out_pond_bal,8000) 'jday','mon','day','yr','unit','gis_id', &
+          'name','area','storage','rain','div_added','evap', &
+          'recharge','div_spec','div_unsat'
+        write(out_pond_bal,8000) '','','','','','','', &
+          'm2','m3','m3','m3','m3','m3','m3','m3'
+        !pond solute mass balance file
+        open(out_pond_sol,file='gwflow_pond_sol_day.txt')
+        write(out_pond_sol,*) 'gwflow recharge pond daily solute mass balance (kg)'
+        write(out_pond_sol,8000) 'jday','mon','day','yr','unit','gis_id', &
+          'name','area','storage','solute','mass','div_added', &
+          'recharge'
+        write(out_pond_sol,8000) '','','','','','','', &
+          'm2','m3','','kg','kg','kg'
+        !pond mass for each day
+        open(out_pond_mass,file='gwflow_pond_mass_day.txt')
+        write(out_pond_mass,*) 'gwflow recharge pond daily solute mass (kg), one column per pond'
+        !pond concentration for each day
+        open(out_pond_conc,file='gwflow_pond_conc_day.txt')
+        write(out_pond_conc,*) 'gwflow recharge pond daily concentration (g/m3), one column per pond'
+        endif !gwflag_flux
+      endif
+
+
+      !read in connection information between SWAT+ objects (LSUs or HRUs) and grid cells  ------------------------------------------------
+      !if LSU-cell connection is active (i.e., file is provided), it supercedes HRU-cell connection
+      write(out_gw,*)
+      write(out_gw,*) '     read and prepare connection (HRU-cell or LSU-cell)'
+      if(lsu_cells_link == 1) then
+        write(out_gw,*) '          LSU-cell connections (gwflow.lsucell)'
+        open(in_lsu_cell,file='lsucell.gw')
+        read(in_lsu_cell,*) header
+        !read in list of LSUs that are spatially connected to grid cells
+        read(in_lsu_cell,*) nlsu !number of LSUs in the model
+        read(in_lsu_cell,*) nlsu_connected !number of LSUs spatially connected to grid cells
+        allocate(lsus_connected(nlsu))
+        lsus_connected = 0
+        do i=1,nlsu_connected
+          read(in_lsu_cell,*) lsu_id
+          lsus_connected(lsu_id) = 1
+        enddo
+        !read in the LSU-cell connection information
+        read(in_lsu_cell,*) header
+        read(in_lsu_cell,*) header
+        allocate(lsu_num_cells(nlsu))
+        lsu_num_cells = 0
+        !first pass: count cells per LSU to determine max dimension
+        do k=1,nlsu
+          if(lsus_connected(k).eq.1) then
+          lsu = k
+          cell_count = 0
+          do while (lsu.eq.k)
+            cell_count = cell_count + 1
+            read(in_lsu_cell,*) lsu
+            read(in_lsu_cell,*,end=26) lsu
+            backspace(in_lsu_cell)
+          enddo
+  26      lsu_num_cells(k) = cell_count
+          endif
+        enddo
+        max_cells = maxval(lsu_num_cells(1:nlsu))
+        !rewind to start of connection data and re-read headers
+        rewind(in_lsu_cell)
+        read(in_lsu_cell,*) header
+        read(in_lsu_cell,*) nlsu
+        read(in_lsu_cell,*) nlsu_connected
+        do i=1,nlsu_connected
+          read(in_lsu_cell,*) lsu_id
+        enddo
+        read(in_lsu_cell,*) header
+        read(in_lsu_cell,*) header
+        !second pass: allocate with exact max and fill arrays
+        allocate(lsu_cells(nlsu,max_cells))
+        allocate(lsu_cells_fract(nlsu,max_cells))
+        lsu_num_cells = 0
+        lsu_cells = 0
+        lsu_cells_fract = 0.
+        do k=1,nlsu
+          if(lsus_connected(k).eq.1) then
+          lsu = k
+          cell_count = 0
+          do while (lsu.eq.k)
+            cell_count = cell_count + 1
+            read(in_lsu_cell,*) lsu,lsu_area,lsu_cells(k,cell_count),poly_area
+            if(grid_type == "structured") then
+              if(cell_id_list(lsu_cells(k,cell_count)) > 0) then
+                lsu_cells(k,cell_count) = cell_id_list(lsu_cells(k,cell_count))
+                lsu_cells_fract(k,cell_count) = poly_area / lsu_area
+              endif
+            else
+              lsu_cells_fract(k,cell_count) = poly_area / lsu_area
+            endif
+            read(in_lsu_cell,*,end=25) lsu
+            backspace(in_lsu_cell)
+          enddo
+  25      lsu_num_cells(k) = cell_count
+          endif
+        enddo
+
+      else !LSU-cell connection not present; proceed with HRU-cell connection
+
+      !HRU-cell connection (new format: meta line + column header + data rows; no HRU-id list section)
+      write(out_gw,*) '          HRU-cell connections (gwflow.hrucell)'
+      open(in_hru_cell,file='hrucell.gw')
+      read(in_hru_cell,*)                          !meta line
+      read(in_hru_cell,*)                          !column header
+      allocate(hrus_connected(sp_ob%hru))
+      hrus_connected = 0
+      allocate(hru_num_cells(sp_ob%hru))
+      hru_num_cells = 0
+      !first pass: scan all data rows to derive hrus_connected and per-HRU cell counts
+      nhru_connected = 0
+      do
+        read(in_hru_cell,*,iostat=eof) hru_id
+        if(eof /= 0) exit
+        if(hru_id < 1 .or. hru_id > sp_ob%hru) cycle
+        if(hrus_connected(hru_id) == 0) then
+          hrus_connected(hru_id) = 1
+          nhru_connected = nhru_connected + 1
+        endif
+        hru_num_cells(hru_id) = hru_num_cells(hru_id) + 1
+      enddo
+      max_cells = maxval(hru_num_cells(1:sp_ob%hru))
+      !rewind to start and re-read headers
+      rewind(in_hru_cell)
+      read(in_hru_cell,*)
+      read(in_hru_cell,*)
+      !second pass: allocate with exact max and fill arrays
+      allocate(hru_cells(sp_ob%hru,max_cells))
+      allocate(hru_cells_fract(sp_ob%hru,max_cells))
+      allocate(cells_fract(sp_ob%hru,max_cells))
+      hru_num_cells = 0
+      hru_cells = 0
+      hru_cells_fract = 0.
+      do k=1,sp_ob%hru
+        if(hrus_connected(k).eq.1) then
+        hru_id = k
+        cell_count = 0
+        do while (hru_id.eq.k)
+          cell_count = cell_count + 1
+          read(in_hru_cell,*) hru_id,hru_area,hru_cells(k,cell_count),poly_area
+          if(grid_type == "structured") then
+            if(cell_id_list(hru_cells(k,cell_count)) > 0) then
+              hru_cells(k,cell_count) = cell_id_list(hru_cells(k,cell_count))
+              hru_cells_fract(k,cell_count) = poly_area / hru_area !fraction of HRU area
+              cells_fract(k,cell_count) = poly_area / gw_state(hru_cells(k,cell_count))%area !fraction of cell area
+            else
+              cell_count = cell_count - 1
+            endif
+          else
+            hru_cells_fract(k,cell_count) = poly_area / hru_area !fraction of HRU area
+            cells_fract(k,cell_count) = poly_area / gw_state(hru_cells(k,cell_count))%area !fraction of cell area
+          endif
+          read(in_hru_cell,*,end=10) hru_id
+          backspace(in_hru_cell)
+        enddo
+10      hru_num_cells(k) = cell_count
+        endif
+      enddo
+
+      endif !check for LSU-cell connection
+
+
+
+
+      !output file initialization (extracted to gwflow_output.f90)
+      call gwflow_output_init
+
+      !prepare additional arrays for start of simulation ----------------------------------------------------
+
+      !map cell groundwater delay terms to each HRU
+      !default value (days) = average of all grid cell values
+      write(out_gw,*)
+      write(out_gw,*) '     final preparations...'
+      write(out_gw,*) '          map recharge delay to HRUs'
+      allocate(gw_delay(sp_ob%hru))
+      allocate(gw_delay_days(sp_ob%hru))
+      allocate(gw_rech(sp_ob%hru))
+      sum = 0.
+      do i=1,ncell
+        sum = sum + delay(i)
+      enddo
+      gw_delay_days = sum / ncell
+      gw_delay = Exp(-1./(gw_delay_days + 1.e-6))
+      !assign value to HRU based on connected grid cells
+      if(lsu_cells_link == 0) then !if LSU-cell connection: keep average of all grid cell values
+        do k=1,sp_ob%hru
+          do i=1,hru_num_cells(k)
+            cell_num = hru_cells(k,i)
+            gw_delay_days(k) = delay(cell_num)
+            gw_delay(k) = Exp(-1./(gw_delay_days(k) + 1.e-6))
+          enddo
+        enddo
+      endif
+      gw_rech = 0.
+
+      !set groundwater head to initial head, for each grid cell
+      do i=1,ncell
+        gw_state(i)%head = gw_state(i)%init
+      enddo
+
+      !set solute mass for each grid cell
+      if(gw_solute_flag == 1) then
+        do i=1,ncell
+          if(gw_state(i)%stat.gt.0) then
+            if(gw_state(i)%head > gw_state(i)%botm) then
+              gw_cell_volume = gw_state(i)%area * (gw_state(i)%head-gw_state(i)%botm) * gw_state(i)%spyd !m3 of groundwater
+            else
+              gw_cell_volume = 0.
+            endif
+            do s=1,gw_nsolute !loop through solutes
+              gwsol_state(i)%solute(s)%mass = gw_cell_volume * gwsol_state(i)%solute(s)%conc !m3 * g/m3 = g
+            enddo
+          endif
+        enddo
+      endif
+
+      !(initial head/temp/conc dump files removed -- initial values in gwflow_cell_definition.txt)
+
+      !(head/temp/conc grid files removed -- now in cell-level long-format output)
+
+
+      !read in cells for groundwater transit time output
+      if(grid_type == "structured") then !only for structured grids
+      inquire(file='transit.gw',exist=i_exist)
+      if(i_exist) then
+        gw_ttime = 1
+        !allocate arrays
+        allocate(gw_transit(ncell))
+        do i=1,ncell
+          gw_transit(i)%x = gw_state(i)%xcrd !start at cell centroid
+          gw_transit(i)%y = gw_state(i)%ycrd !start at cell centroid
+          gw_transit(i)%t = 0.
+          gw_transit(i)%cell = i !tracks cell where groundwater is located (at current time step)
+          gw_transit(i)%t_chan = 0. !time for groundwater to reach channel
+        enddo
+        !read in cells for output
+        open(in_transit_time,file='transit.gw')
+        read(in_transit_time,*) header
+        read(in_transit_time,*) header
+        read(in_transit_time,*) gw_transit_num
+        allocate(gw_transit_cells(gw_transit_num))
+        do i=1,gw_transit_num
+          read(in_transit_time,*) cell_transit
+          if(grid_type == "structured") then
+            gw_transit_cells(i) = cell_id_list(cell_transit)
+          endif
+        enddo
+        close(in_transit_time)
+        !open up output file
+        open(out_gw_transit,file='gwflow_transit_cell')
+        write(out_gw_transit,*) 'groundwater location and transit times'
+        write(out_gw_transit,*) 'results (t, x, y, cell) for each cell listed in gwflow.transit'
+        write(out_gw_transit,*) 't = days'
+        write(out_gw_transit,*) 'x = meters'
+        write(out_gw_transit,*) 'y = meters'
+        write(out_gw_transit,*) 'cell = current location'
+        !prepare: transit time to channels
+        open(out_gw_transit_chan,file='gwflow_transit_chan')
+        write(out_gw_transit_chan,*) 'time (days) to a channel for each grid cell'
+        allocate(gw_cell_chan_time(ncell))
+        allocate(gw_cell_chan_flag(ncell)) !array: 0=no channel; 1=channel is present in cell
+        gw_cell_chan_time = 0.
+        gw_cell_chan_flag = 0
+        do i=1,sp_ob%gwflow
+          gw_cell_chan_flag(gw_chan_cell(i)) = 1
+        enddo
+        if(gw_tile_flag == 1) then
+          open(out_gw_transit_tile,file='gwflow_transit_tile')
+          write(out_gw_transit_tile,*) 'time (days) to a tile for each grid cell'
+          allocate(gw_cell_tile_time(ncell))
+          gw_cell_tile_time = 0.
+        endif
+      endif
+      endif
+
+
+      !read in groups of channel cells, to write out daily reach gw-channel exchange
+      !sw_group.gw (flat, variable-width like cellcon): one row per group = group_id ncell cell_id...
+      inquire(file='sw_group.gw',exist=i_exist)
+      if(i_exist) then
+        gw_gwsw_group_flag = 1
+        open(1235,file='sw_group.gw')
+        read(1235,*) header                         !meta line
+        read(1235,*) header                         !column header
+        !first pass: count groups and max cells/group
+        gw_gwsw_ngroup = 0
+        gw_gwsw_max = 0
+        do
+          read(1235,'(a)',iostat=eof) split_line_buf
+          if(eof /= 0) exit
+          if(len_trim(split_line_buf) == 0) cycle
+          call split_line(split_line_buf, split_fields, split_nf)
+          gw_gwsw_ngroup = gw_gwsw_ngroup + 1
+          read(split_fields(2),*) k
+          if(k > gw_gwsw_max) gw_gwsw_max = k
+        enddo
+        allocate(gw_gwsw_ncell(gw_gwsw_ngroup))
+        allocate(gw_gwsw_group(gw_gwsw_ngroup,gw_gwsw_max))
+        gw_gwsw_group = 0
+        rewind(1235)
+        read(1235,*) header
+        read(1235,*) header
+        do i=1,gw_gwsw_ngroup
+          read(1235,'(a)') split_line_buf
+          call split_line(split_line_buf, split_fields, split_nf)
+          read(split_fields(2),*) gw_gwsw_ncell(i)
+          do j=1,gw_gwsw_ncell(i)
+            read(split_fields(2+j),*) gw_gwsw_group(i,j)
+            if(grid_type == "structured") then
+              gw_gwsw_group(i,j) = cell_id_list(gw_gwsw_group(i,j))
+            endif
+          enddo
+        enddo
+        close(1235)
+        if(gwflag_flux == 1) then
+          open(out_gwsw_groups,file='gwflow_gwsw_group_day.txt')
+          write(out_gwsw_groups,*) 'gwflow daily gw-sw exchange volume (m3) per cell group'
+        endif
+      endif
+
+      !(channel observation cells: now the obs column of chancell.gw, handled with channel-cell
+      ! processing above; no separate file)
+
+      !prepare hydrograph separation array (daily output, written only when daily gwflow output is on)
+      allocate(hydsep_flag(sp_ob%chandeg))
+      hydsep_flag = 0
+      if(gwflag_day == 1) hydsep_flag = 1  !enable hydrograph separation output for all channels
+      allocate(chan_hyd_sep(sp_ob%chandeg,6))
+      chan_hyd_sep = 0.
+      if(gwflag_day == 1) then
+        open(out_hyd_sep,file='gwflow_chan_hydsep_day.txt')
+        write(out_hyd_sep,*) 'gwflow channel hydrograph separation (m3/sec)'
+        write(out_hyd_sep,'(4a6,2a8,a18,7a13)') &
+          'jday','mon','day','yr','unit','gis_id','name', &
+          'surf_runoff','lateral','gw_discharge','stream_seep', &
+          'satex_gw','satex_sw','tile_drain'
+        write(out_hyd_sep,'(4a6,2a8,a18,7a13)') &
+          '','','','','','','', &
+          'm3/s','m3/s','m3/s','m3/s','m3/s','m3/s','m3/s'
+      endif
+
+      !gwflow record file (skip line)
+      write(out_gw,*)
+      write(out_gw,*)
+      write(out_gw,*) 'record of daily gwflow use...'
+      write(out_gw,*)
+
+
+
+
+
+
+
+      return
+
+
+100   format(i6,i6,10(f10.2))
+      !output files for all cells
+101   format(10000(f12.4))
+102   format(10000(i4))
+      !standard SWAT+ header format
+8000  format(4a6,2a8,a18,50a13)
+      !other formats
+103   format(10000(i8))
+111   format(1x,a, 5x,"Time",2x,i2,":",i2,":",i2)
+119   format(4x,a8,a8,a10,a16,a19,50(a13))
+120   format(a8,7x,50(a13))
+121   format(50(a16))
+122   format(a20,50(a13))
+123   format(a10,1000(i12))
+130   format(10000(f12.3))
+131   format(2x,a8,a8,a8,a8,1x,50(a15))
+132   format(4x,a8,a8,50(a13))
+133   format(4x,a8,a8,a10,a16,a19,50(a18))
+
+      end subroutine gwflow_read
+
+
