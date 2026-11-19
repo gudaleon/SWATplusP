@@ -29,3 +29,11 @@ the private repository `gudaleon/SWATplus_P_Core`.
 SWAT+P is the modelling engine of the Lake of the Woods watershed programme: the model of
 the Canadian tributaries of Lake of the Woods (40,680 km²) is built in SWAT+P, with its
 initial soil phosphorus pools set from the Yang and Post (2011) fractionation data.
+
+## Rights and citation
+
+© 2026 Alex Neumann. The augmentation components of SWAT+P are the author's original
+work, disclosed here in advance of the publication of record; see
+`LICENSE_AUGMENTATION.md` for the rights statement and the citation. The underlying SWAT+
+code remains under its own licence (the GNU Lesser General Public License v2.1, in
+`LICENSE`).
